@@ -1,3 +1,4 @@
+import time
 from datetime import datetime, timezone
 
 from app.tools.system.state import get_system_state
@@ -12,7 +13,6 @@ def collect_system_snapshot() -> None:
         raise RuntimeError("Failed to collect system state")
 
     data = system_state["data"]
-
     timestamp = datetime.now(timezone.utc).isoformat()
 
     connection = get_connection()
@@ -38,4 +38,23 @@ def collect_system_snapshot() -> None:
     connection.commit()
     connection.close()
 
-    print(f"Snapshot collected at {timestamp}")
+    print(
+        f"[{timestamp}] "
+        f"CPU: {data['cpu']['usage_percent']}% | "
+        f"RAM: {data['memory']['usage_percent']}% | "
+        f"Disk: {data['disk']['usage_percent']}%"
+    )
+
+
+def run_collector(interval_seconds: int = 10) -> None:
+    """Continuously collect system snapshots."""
+    print(f"JULI Collector started. Interval: {interval_seconds}s")
+    print("Press Ctrl+C to stop.")
+
+    try:
+        while True:
+            collect_system_snapshot()
+            time.sleep(interval_seconds)
+
+    except KeyboardInterrupt:
+        print("\nJULI Collector stopped.")
