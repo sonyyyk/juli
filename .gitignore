@@ -5,3 +5,5 @@ __pycache__/
 .env
 .vscode/
 .idea/
+data/*.db
+data/raw/
