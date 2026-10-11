@@ -1,4 +1,7 @@
+
 import psutil
+
+from app.tools.result import make_tool_result
 
 
 def get_cpu_usage() -> dict:
@@ -6,18 +9,19 @@ def get_cpu_usage() -> dict:
     try:
         usage = psutil.cpu_percent(interval=1)
 
-        return {
-            "tool": "get_cpu_usage",
-            "status": "success",
-            "data": {
-                "usage_percent": usage
-            }
-        }
+        return make_tool_result(
+            tool="get_cpu_usage",
+            status="success",
+            data={"usage_percent": usage},
+        )
 
     except Exception as error:
-        return {
-            "tool": "get_cpu_usage",
-            "status": "error",
-            "data": {},
-            "error": str(error)
-        }
+        return make_tool_result(
+            tool="get_cpu_usage",
+            status="error",
+            data={},
+            error={
+                "code": "CPU_READ_ERROR",
+                "message": str(error),
+            },
+        )

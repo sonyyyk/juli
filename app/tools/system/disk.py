@@ -1,4 +1,7 @@
+
 import psutil
+
+from app.tools.result import make_tool_result
 
 
 def get_disk_usage() -> dict:
@@ -6,21 +9,24 @@ def get_disk_usage() -> dict:
     try:
         disk = psutil.disk_usage("/")
 
-        return {
-            "tool": "get_disk_usage",
-            "status": "success",
-            "data": {
+        return make_tool_result(
+            tool="get_disk_usage",
+            status="success",
+            data={
                 "total_bytes": disk.total,
                 "used_bytes": disk.used,
                 "free_bytes": disk.free,
                 "usage_percent": disk.percent,
             },
-        }
+        )
 
     except Exception as error:
-        return {
-            "tool": "get_disk_usage",
-            "status": "error",
-            "data": {},
-            "error": str(error),
-        }
+        return make_tool_result(
+            tool="get_disk_usage",
+            status="error",
+            data={},
+            error={
+                "code": "DISK_READ_ERROR",
+                "message": str(error),
+            },
+        )
