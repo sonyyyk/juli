@@ -1,0 +1,7 @@
+# Locally collected system data
+output/
+*.json
+
+# Python
+__pycache__/
+*.py[cod]
