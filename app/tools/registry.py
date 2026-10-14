@@ -6,6 +6,7 @@ from app.tools.processes.list_processes import list_processes
 from app.tools.system.cpu import get_cpu_usage
 from app.tools.system.disk import get_disk_usage
 from app.tools.system.memory import get_memory_usage
+from app.tools.system.pressure import get_system_pressure
 from app.tools.system.state import get_system_state
 
 
@@ -14,6 +15,7 @@ TOOL_REGISTRY: dict[str, Callable[..., dict[str, Any]]] = {
     "get_memory_usage": get_memory_usage,
     "get_disk_usage": get_disk_usage,
     "get_system_state": get_system_state,
+    "get_system_pressure": get_system_pressure,
     "list_processes": list_processes,
     "get_process_info": get_process_info,
 }
@@ -41,6 +43,12 @@ TOOL_METADATA: dict[str, dict[str, Any]] = {
     "get_system_state": {
         "category": "system",
         "description": "Collect CPU, memory, and disk usage.",
+        "operation": "read",
+        "parameters": {},
+    },
+    "get_system_pressure": {
+        "category": "system",
+        "description": "Read Linux CPU, memory, and I/O pressure metrics.",
         "operation": "read",
         "parameters": {},
     },
