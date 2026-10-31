@@ -82,12 +82,21 @@ class TestMonitoringIntegration(unittest.TestCase):
         with patch(
             "app.monitoring.analysis_service.load_recent_snapshots",
             return_value=snapshots,
+        ), patch(
+            "app.monitoring.analysis_service.get_system_pressure",
+            return_value={
+                "tool": "get_system_pressure",
+                "status": "error",
+                "data": None,
+                "error": {"code": "PSI_UNAVAILABLE", "message": "No PSI data"},
+            },
         ):
             result = analyze_system_history(limit=3)
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["snapshots_analyzed"], 3)
         self.assertEqual(result["anomalies_found"], 0)
         self.assertEqual(result["anomalies"], [])
+        self.assertEqual(result["significance_assessments"], [])
 
     def test_analysis_service_detects_persistent_anomaly(self):
         snapshots = [
@@ -315,6 +324,15 @@ class TestMonitoringIntegration(unittest.TestCase):
         self.assertEqual(len(result["persistent_anomalies"]), 1)
         self.assertEqual(result["persistent_anomalies_found"], 1)
         self.assertEqual(result["persistent_anomalies"][0]["metric"], "cpu_usage")
+        self.assertEqual(len(result["significance_assessments"]), 3)
+        self.assertTrue(all(
+            profile["persistence"]["status"] == "confirmed"
+            for profile in result["significance_assessments"]
+        ))
+        self.assertTrue(all(
+            profile["corroborating_evidence"]["psi_context"]["status"] == "unavailable"
+            for profile in result["significance_assessments"]
+        ))
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ import math
 from app.monitoring.history_reader import load_recent_snapshots
 from app.monitoring.anomaly_detector import detect_threshold_anomalies
 from app.monitoring.temporal_analyzer import detect_persistent_anomalies
+from app.monitoring.significance_evaluator import evaluate_significance
 from app.models.observation import Observation
 from app.tools.system.pressure import get_system_pressure
 
@@ -105,6 +106,16 @@ def run_monitoring_cycle(
             "detail": str(exc),
         })
 
+    significance_assessments = evaluate_significance(
+        threshold_anomalies=threshold_anomalies,
+        persistent_anomalies=persistent_anomalies,
+        snapshots=snapshots,
+        pressure_observations=pressure_observations,
+        data_issues=data_issues,
+        temporal_errors=temporal_errors,
+        pressure_issues=pressure_issues,
+    )
+
     return {
         "status": "partial" if temporal_errors else "success",
         "snapshots_analyzed": len(snapshots),
@@ -116,6 +127,7 @@ def run_monitoring_cycle(
         "temporal_errors": temporal_errors,
         "pressure_observations": pressure_observations,
         "pressure_issues": pressure_issues,
+        "significance_assessments": significance_assessments,
     }
 
 
