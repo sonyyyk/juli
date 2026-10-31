@@ -1,5 +1,6 @@
 
 from pathlib import Path
+import math
 
 from app.tools.result import make_tool_result
 
@@ -15,6 +16,7 @@ def get_system_pressure() -> dict:
     """Read Linux PSI metrics without modifying system state."""
     data: dict[str, dict[str, dict[str, float | int]]] = {}
     unavailable: dict[str, str] = {}
+    malformed: dict[str, list[str]] = {}
 
     for resource, path in PSI_PATHS.items():
         try:
@@ -23,7 +25,12 @@ def get_system_pressure() -> dict:
 
             for line in content.splitlines():
                 parts = line.split()
-                if not parts or parts[0] not in {"some", "full"}:
+                if not parts:
+                    continue
+                if parts[0] not in {"some", "full"}:
+                    malformed.setdefault(resource, []).append(
+                        f"Unrecognized PSI line: {line}"
+                    )
                     continue
 
                 metrics: dict[str, float | int] = {}
@@ -31,12 +38,28 @@ def get_system_pressure() -> dict:
                 for item in parts[1:]:
                     key, separator, raw_value = item.partition("=")
                     if not separator:
+                        malformed.setdefault(resource, []).append(
+                            f"Malformed PSI field: {item}"
+                        )
                         continue
 
                     if key == "total":
-                        metrics[key] = int(raw_value)
+                        try:
+                            metrics[key] = int(raw_value)
+                        except ValueError:
+                            malformed.setdefault(resource, []).append(
+                                f"Invalid PSI total value: {raw_value}"
+                            )
                     elif key in {"avg10", "avg60", "avg300"}:
-                        metrics[key] = float(raw_value)
+                        try:
+                            value = float(raw_value)
+                            if not math.isfinite(value) or not 0 <= value <= 100:
+                                raise ValueError("value outside 0..100")
+                            metrics[key] = value
+                        except ValueError:
+                            malformed.setdefault(resource, []).append(
+                                f"Invalid PSI {key} value: {raw_value}"
+                            )
 
                 resource_data[parts[0]] = metrics
 
@@ -48,7 +71,7 @@ def get_system_pressure() -> dict:
         except (OSError, ValueError) as error:
             unavailable[resource] = str(error)
 
-    if not data:
+    if not data and not malformed:
         return make_tool_result(
             tool="get_system_pressure",
             status="error",
@@ -62,18 +85,19 @@ def get_system_pressure() -> dict:
     result_data = {
         "resources": data,
         "unavailable": unavailable,
+        "malformed": malformed,
     }
 
     return make_tool_result(
         tool="get_system_pressure",
-        status="partial" if unavailable else "success",
+        status="partial" if unavailable or malformed else "success",
         data=result_data,
         error=(
             {
                 "code": "PSI_PARTIALLY_UNAVAILABLE",
                 "message": "Some PSI resources could not be read.",
             }
-            if unavailable
+            if unavailable or malformed
             else None
         ),
     )

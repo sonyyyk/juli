@@ -60,3 +60,41 @@ def test_pressure_reports_error_when_all_resources_unavailable(monkeypatch):
     assert result["status"] == "error"
     assert result["data"] is None
     assert result["error"]["code"] == "PSI_UNAVAILABLE"
+
+
+def test_pressure_reports_malformed_measurements(monkeypatch):
+    def fake_read_text(path, encoding="utf-8"):
+        if str(path) == "/proc/pressure/cpu":
+            return "some avg10=nan avg60=1.00 avg300=0.50 total=10\n"
+        raise FileNotFoundError("PSI resource unsupported")
+
+    monkeypatch.setattr(Path, "read_text", fake_read_text)
+
+    result = get_system_pressure()
+
+    assert result["status"] == "partial"
+    assert result["data"]["resources"]["cpu"]["some"] == {
+        "avg60": 1.0,
+        "avg300": 0.5,
+        "total": 10,
+    }
+    assert "avg10" in result["data"]["malformed"]["cpu"][0]
+    assert result["data"]["unavailable"] == {
+        "memory": "PSI resource unsupported",
+        "io": "PSI resource unsupported",
+    }
+
+
+def test_pressure_malformed_only_is_returned_as_partial(monkeypatch):
+    def fake_read_text(path, encoding="utf-8"):
+        if str(path) == "/proc/pressure/cpu":
+            return "some avg10=-1 avg60=nan avg300=101 total=bad\n"
+        raise FileNotFoundError("PSI resource unsupported")
+
+    monkeypatch.setattr(Path, "read_text", fake_read_text)
+
+    result = get_system_pressure()
+
+    assert result["status"] == "partial"
+    assert result["data"]["resources"]["cpu"]["some"] == {}
+    assert len(result["data"]["malformed"]["cpu"]) == 4

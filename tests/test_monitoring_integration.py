@@ -154,6 +154,168 @@ class TestMonitoringIntegration(unittest.TestCase):
         self.assertEqual(result["threshold_anomalies_found"], 0)
         self.assertEqual(result["persistent_anomalies_found"], 0)
 
+    def pressure_result(self, resources, unavailable=None, malformed=None, status="success"):
+        return {
+            "tool": "get_system_pressure",
+            "status": status,
+            "data": {
+                "resources": resources,
+                "unavailable": unavailable or {},
+                "malformed": malformed or {},
+            },
+            "error": None,
+        }
+
+    def complete_pressure_resources(self):
+        return {
+            resource: {
+                stall_type: {
+                    window: 1.25
+                    for window in ("avg10", "avg60", "avg300")
+                }
+                for stall_type in ("some", "full")
+            }
+            for resource in ("cpu", "memory", "io")
+        }
+
+    def test_monitoring_cycle_includes_all_valid_pressure_observations(self):
+        with (
+            patch("app.monitoring.analysis_service.load_recent_snapshots", return_value=[]),
+            patch(
+                "app.monitoring.analysis_service.get_system_pressure",
+                return_value=self.pressure_result(self.complete_pressure_resources()),
+            ),
+        ):
+            result = run_monitoring_cycle()
+
+        observations = result["pressure_observations"]
+        self.assertEqual(len(observations), 18)
+        self.assertEqual(
+            {item.metric for item in observations},
+            {
+                f"psi_{resource}_{stall_type}_{window}"
+                for resource in ("cpu", "memory", "io")
+                for stall_type in ("some", "full")
+                for window in ("avg10", "avg60", "avg300")
+            },
+        )
+        self.assertTrue(all(item.source == "get_system_pressure" for item in observations))
+        self.assertTrue(all(item.unit == "%" for item in observations))
+        self.assertEqual(
+            observations[0].context,
+            {"resource": "cpu", "stall_type": "some", "window": "avg10"},
+        )
+        self.assertEqual(result["threshold_anomalies"], [])
+        self.assertEqual(result["persistent_anomalies"], [])
+
+    def test_unavailable_pressure_resource_is_reported_without_zero_values(self):
+        resources = self.complete_pressure_resources()
+        del resources["memory"]
+        with (
+            patch("app.monitoring.analysis_service.load_recent_snapshots", return_value=[]),
+            patch(
+                "app.monitoring.analysis_service.get_system_pressure",
+                return_value=self.pressure_result(
+                    resources, unavailable={"memory": "Permission denied"}, status="partial"
+                ),
+            ),
+        ):
+            result = run_monitoring_cycle()
+
+        self.assertFalse(any(item.context["resource"] == "memory" for item in result["pressure_observations"]))
+        self.assertTrue(any(
+            issue["issue"] == "psi_unavailable" and issue["resource"] == "memory"
+            for issue in result["pressure_issues"]
+        ))
+
+    def test_unsupported_pressure_metrics_are_reported(self):
+        resources = self.complete_pressure_resources()
+        del resources["cpu"]["full"]
+        del resources["io"]["some"]["avg300"]
+        with (
+            patch("app.monitoring.analysis_service.load_recent_snapshots", return_value=[]),
+            patch(
+                "app.monitoring.analysis_service.get_system_pressure",
+                return_value=self.pressure_result(resources),
+            ),
+        ):
+            result = run_monitoring_cycle()
+
+        self.assertTrue(any(
+            issue["issue"] == "psi_unsupported_metric"
+            and issue.get("resource") == "cpu"
+            and issue.get("metric") == "full"
+            for issue in result["pressure_issues"]
+        ))
+        self.assertTrue(any(
+            issue["issue"] == "psi_unsupported_metric"
+            and issue.get("resource") == "io"
+            and issue.get("metric") == "some_avg300"
+            for issue in result["pressure_issues"]
+        ))
+
+    def test_malformed_pressure_values_are_reported_and_excluded(self):
+        resources = self.complete_pressure_resources()
+        resources["cpu"]["some"]["avg10"] = float("nan")
+        with (
+            patch("app.monitoring.analysis_service.load_recent_snapshots", return_value=[]),
+            patch(
+                "app.monitoring.analysis_service.get_system_pressure",
+                return_value=self.pressure_result(resources),
+            ),
+        ):
+            result = run_monitoring_cycle()
+
+        self.assertFalse(any(item.metric == "psi_cpu_some_avg10" for item in result["pressure_observations"]))
+        self.assertTrue(any(
+            issue["issue"] == "psi_malformed"
+            and issue.get("metric") == "some_avg10"
+            for issue in result["pressure_issues"]
+        ))
+
+    def test_pressure_tool_error_does_not_stop_snapshot_analysis(self):
+        snapshots = [
+            {
+                "timestamp": f"2026-10-11T10:00:{second:02d}+00:00",
+                "cpu_usage": 95.0,
+                "memory_usage": 40.0,
+                "disk_usage": 70.0,
+            }
+            for second in (0, 6, 12)
+        ]
+        tool_error = {
+            "tool": "get_system_pressure",
+            "status": "error",
+            "data": None,
+            "error": {"code": "PSI_UNAVAILABLE", "message": "No PSI data"},
+        }
+        with (
+            patch("app.monitoring.analysis_service.load_recent_snapshots", return_value=snapshots),
+            patch("app.monitoring.analysis_service.get_system_pressure", return_value=tool_error),
+        ):
+            result = run_monitoring_cycle()
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["snapshots_analyzed"], 3)
+        self.assertEqual(result["pressure_observations"], [])
+        self.assertTrue(any(
+            issue["issue"] == "psi_tool_error"
+            and "No PSI data" in issue["detail"]
+            for issue in result["pressure_issues"]
+        ))
+
+        self.assertIsInstance(result["threshold_anomalies"], list)
+        self.assertEqual(len(result["threshold_anomalies"]), 3)
+        self.assertEqual(result["threshold_anomalies_found"], 3)
+        self.assertEqual(
+            {item["metric"] for item in result["threshold_anomalies"]},
+            {"cpu_usage"},
+        )
+        self.assertIsInstance(result["persistent_anomalies"], list)
+        self.assertEqual(len(result["persistent_anomalies"]), 1)
+        self.assertEqual(result["persistent_anomalies_found"], 1)
+        self.assertEqual(result["persistent_anomalies"][0]["metric"], "cpu_usage")
+
 
 if __name__ == "__main__":
     unittest.main()
