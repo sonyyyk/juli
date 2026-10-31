@@ -1,5 +1,6 @@
 
 from app.models.observation import Observation
+from app.monitoring.data_quality import parse_usage_percent
 
 
 DEFAULT_THRESHOLDS: dict[str, float] = {
@@ -30,17 +31,22 @@ def detect_threshold_anomalies(
         if threshold is None:
             continue
 
-        if observation.value > threshold:
+        value = parse_usage_percent(observation.value)
+        threshold_value = parse_usage_percent(threshold)
+        if value is None or threshold_value is None:
+            continue
+
+        if value > threshold_value:
             anomalies.append({
                 "timestamp": observation.timestamp,
                 "source": observation.source,
                 "metric": observation.metric,
-                "value": observation.value,
+                "value": value,
                 "unit": observation.unit,
-                "threshold": threshold,
+                "threshold": threshold_value,
                 "reason": (
                     f"{observation.metric} exceeded "
-                    f"the threshold of {threshold} "
+                    f"the threshold of {threshold_value} "
                     f"{observation.unit}"
                 ),
             })

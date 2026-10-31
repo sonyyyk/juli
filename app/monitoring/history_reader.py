@@ -6,8 +6,8 @@ def load_recent_snapshots(
     limit: int = 1000,
 ) -> list[dict[str, object]]:
     """Load recent system snapshots from SQLite in chronological order."""
-    if limit < 1:
-        raise ValueError("limit must be at least 1")
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise ValueError("limit must be a positive integer")
 
     connection = get_connection()
 

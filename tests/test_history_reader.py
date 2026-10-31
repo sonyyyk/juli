@@ -67,6 +67,26 @@ class TestHistoryReader(unittest.TestCase):
         with self.assertRaises(ValueError):
             load_recent_snapshots(limit=0)
 
+    def test_non_integer_and_boolean_limits_are_rejected(self):
+        for limit in (True, 1.5, "2", None):
+            with self.subTest(limit=limit), self.assertRaises(ValueError):
+                load_recent_snapshots(limit=limit)
+
+    def test_reader_preserves_collection_order_for_quality_detection(self):
+        self.connection.execute("DELETE FROM system_snapshots")
+        self.connection.executemany(
+            "INSERT INTO system_snapshots (timestamp, cpu_usage, memory_usage, disk_usage) VALUES (?, ?, ?, ?)",
+            [
+                ("2026-10-11T10:00:12+00:00", 95.0, 40.0, 70.0),
+                ("2026-10-11T10:00:06+00:00", 95.0, 40.0, 70.0),
+            ],
+        )
+        snapshots = load_recent_snapshots()
+        self.assertEqual(
+            [item["timestamp"] for item in snapshots],
+            ["2026-10-11T10:00:12+00:00", "2026-10-11T10:00:06+00:00"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

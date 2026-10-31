@@ -111,7 +111,7 @@ def test_temporal_series_requires_metric_threshold_and_covering_time():
 
     for candidate in (wrong_metric, wrong_threshold, outside_interval):
         profile = evaluate(persistent=[candidate])[0]
-        assert profile["persistence"]["status"] == "not_confirmed"
+        assert profile["persistence"]["status"] == "unknown"
         assert profile["persistence"]["series"] is None
 
 

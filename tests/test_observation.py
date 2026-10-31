@@ -1,6 +1,7 @@
 
 import unittest
 from dataclasses import FrozenInstanceError
+import math
 
 from app.models.observation import Observation
 
@@ -53,6 +54,17 @@ class TestObservation(unittest.TestCase):
 
         with self.assertRaises(FrozenInstanceError):
             observation.value = 90.0
+
+    def test_invalid_measurement_values_are_rejected(self):
+        for value in (None, "1.5", True, math.nan, math.inf, -math.inf):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                Observation(
+                    timestamp="2026-10-11T19:16:40+00:00",
+                    source="test",
+                    metric="cpu_usage",
+                    value=value,
+                    unit="%",
+                )
 
 
 if __name__ == "__main__":

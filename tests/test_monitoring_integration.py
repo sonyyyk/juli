@@ -1,5 +1,6 @@
 
 import unittest
+import math
 from unittest.mock import patch
 
 from app.monitoring.history_reader import load_recent_snapshots
@@ -163,6 +164,125 @@ class TestMonitoringIntegration(unittest.TestCase):
         self.assertEqual(result["threshold_anomalies_found"], 0)
         self.assertEqual(result["persistent_anomalies_found"], 0)
 
+    def test_invalid_metrics_are_reported_and_excluded_from_observations(self):
+        invalid_values = (math.nan, math.inf, -math.inf, "95", True, -1, 101)
+        for value in invalid_values:
+            with self.subTest(value=value), patch(
+                "app.monitoring.analysis_service.load_recent_snapshots",
+                return_value=[{
+                    "timestamp": "2026-10-11T10:00:00+00:00",
+                    "cpu_usage": value,
+                    "memory_usage": 40.0,
+                    "disk_usage": 70.0,
+                }],
+            ), patch(
+                "app.monitoring.analysis_service.get_system_pressure",
+                return_value={"status": "error", "data": None, "error": {"message": "no PSI"}},
+            ):
+                result = run_monitoring_cycle(limit=1)
+            self.assertFalse(any(
+                item["metric"] == "cpu_usage"
+                for item in result["threshold_anomalies"]
+            ))
+            self.assertTrue(any(
+                item["issue"] == "cpu_usage_invalid"
+                for item in result["data_issues"]
+            ))
+
+    def test_invalid_timestamp_keeps_data_issue_and_disables_persistence(self):
+        snapshots = [
+            {"timestamp": "2026-10-11T10:00:00+00:00", "cpu_usage": 95, "memory_usage": 40, "disk_usage": 70},
+            {"timestamp": "not-a-timestamp", "cpu_usage": 95, "memory_usage": 40, "disk_usage": 70},
+            {"timestamp": "2026-10-11T10:00:12+00:00", "cpu_usage": 95, "memory_usage": 40, "disk_usage": 70},
+        ]
+        with patch(
+            "app.monitoring.analysis_service.load_recent_snapshots", return_value=snapshots
+        ), patch(
+            "app.monitoring.analysis_service.get_system_pressure",
+            return_value={"status": "error", "data": None, "error": {"message": "no PSI"}},
+        ):
+            result = run_monitoring_cycle(limit=3)
+
+        self.assertEqual(result["persistent_anomalies"], [])
+        self.assertTrue(any(
+            issue["issue"] == "missing_or_invalid_timestamp"
+            for issue in result["data_issues"]
+        ))
+        self.assertTrue(all(
+            profile["persistence"]["status"] == "unknown"
+            for profile in result["significance_assessments"]
+        ))
+
+    def test_duplicate_and_out_of_order_timestamps_are_reported_and_never_confirmed(self):
+        valid = [
+            {"timestamp": f"2026-10-11T10:00:{second:02d}+00:00", "cpu_usage": 95, "memory_usage": 40, "disk_usage": 70}
+            for second in (0, 6, 12)
+        ]
+        for snapshots, issue_name in (
+            ([valid[0], valid[0].copy(), valid[2]], "duplicate_timestamp"),
+            ([valid[2], valid[1], valid[0]], "out_of_order_timestamp"),
+        ):
+            with self.subTest(issue=issue_name), patch(
+                "app.monitoring.analysis_service.load_recent_snapshots", return_value=snapshots
+            ), patch(
+                "app.monitoring.analysis_service.get_system_pressure",
+                return_value={"status": "error", "data": None, "error": {"message": "no PSI"}},
+            ):
+                result = run_monitoring_cycle(limit=3)
+            self.assertEqual(result["persistent_anomalies"], [])
+            self.assertTrue(any(issue["issue"] == issue_name for issue in result["data_issues"]))
+            self.assertTrue(all(
+                profile["persistence"]["status"] == "unknown"
+                for profile in result["significance_assessments"]
+            ))
+            self.assertTrue(all(
+                profile["data_quality"]["status"] == "unknown"
+                for profile in result["significance_assessments"]
+            ))
+
+    def test_large_gap_is_reported_and_splits_temporal_evidence(self):
+        snapshots = [
+            {"timestamp": f"2026-10-11T10:00:{second:02d}+00:00", "cpu_usage": 95, "memory_usage": 40, "disk_usage": 70}
+            for second in (0, 6, 30, 36, 42)
+        ]
+        with patch(
+            "app.monitoring.analysis_service.load_recent_snapshots", return_value=snapshots
+        ), patch(
+            "app.monitoring.analysis_service.get_system_pressure",
+            return_value={"status": "error", "data": None, "error": {"message": "no PSI"}},
+        ):
+            result = run_monitoring_cycle(limit=5)
+
+        self.assertTrue(any(issue["issue"] == "large_time_gap" for issue in result["data_issues"]))
+        self.assertEqual(len(result["persistent_anomalies"]), 1)
+        # The boundary point carries a gap quality issue, so its profile cannot
+        # claim a fully reliable persistence sequence.
+        boundary_profile = next(
+            profile for profile in result["significance_assessments"]
+            if profile["anomaly"]["timestamp"] == snapshots[2]["timestamp"]
+        )
+        self.assertEqual(boundary_profile["persistence"]["status"], "unknown")
+        later_profiles = [
+            profile for profile in result["significance_assessments"]
+            if profile["anomaly"]["timestamp"] in {
+                snapshots[3]["timestamp"], snapshots[4]["timestamp"]
+            }
+        ]
+        self.assertTrue(all(profile["persistence"]["status"] == "confirmed" for profile in later_profiles))
+
+    def test_monitoring_rejects_invalid_analysis_parameters_before_loading(self):
+        for kwargs in (
+            {"limit": True}, {"limit": 1.5}, {"min_samples": True},
+            {"min_samples": 0}, {"max_gap_seconds": math.inf},
+            {"max_gap_seconds": True},
+        ):
+            with self.subTest(kwargs=kwargs), patch(
+                "app.monitoring.analysis_service.load_recent_snapshots"
+            ) as load:
+                with self.assertRaises(ValueError):
+                    run_monitoring_cycle(**kwargs)
+                load.assert_not_called()
+
     def pressure_result(self, resources, unavailable=None, malformed=None, status="success"):
         return {
             "tool": "get_system_pressure",
@@ -279,6 +399,33 @@ class TestMonitoringIntegration(unittest.TestCase):
         self.assertTrue(any(
             issue["issue"] == "psi_malformed"
             and issue.get("metric") == "some_avg10"
+            for issue in result["pressure_issues"]
+        ))
+
+    def test_malformed_psi_issue_maps_do_not_interrupt_snapshot_analysis(self):
+        result_data = {
+            "resources": self.complete_pressure_resources(),
+            "unavailable": None,
+            "malformed": [],
+        }
+        with patch(
+            "app.monitoring.analysis_service.load_recent_snapshots",
+            return_value=[{
+                "timestamp": "2026-10-11T10:00:00+00:00",
+                "cpu_usage": 20.0,
+                "memory_usage": 40.0,
+                "disk_usage": 70.0,
+            }],
+        ), patch(
+            "app.monitoring.analysis_service.get_system_pressure",
+            return_value={"status": "success", "data": result_data, "error": None},
+        ):
+            result = run_monitoring_cycle(limit=1)
+
+        self.assertEqual(result["snapshots_analyzed"], 1)
+        self.assertEqual(result["threshold_anomalies"], [])
+        self.assertTrue(any(
+            issue["issue"] == "psi_malformed_result"
             for issue in result["pressure_issues"]
         ))
 

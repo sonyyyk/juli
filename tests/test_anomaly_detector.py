@@ -1,5 +1,7 @@
 
 import unittest
+import math
+from types import SimpleNamespace
 
 from app.models.observation import Observation
 from app.monitoring.anomaly_detector import (
@@ -76,6 +78,16 @@ class TestThresholdAnomalyDetection(unittest.TestCase):
         self.assertEqual(
             detect_threshold_anomalies(observations), []
         )
+
+    def test_invalid_observation_values_are_not_anomalies(self):
+        observations = [
+            SimpleNamespace(
+                metric="cpu_usage", value=value, timestamp="2026-10-11T19:30:00+00:00",
+                source="test", unit="%",
+            )
+            for value in (math.nan, math.inf, -math.inf, True, "95")
+        ]
+        self.assertEqual(detect_threshold_anomalies(observations), [])
 
     def test_default_thresholds_are_defined(self):
         self.assertEqual(DEFAULT_THRESHOLDS["cpu_usage"], 90.0)

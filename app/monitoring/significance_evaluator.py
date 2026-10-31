@@ -1,11 +1,12 @@
 """Build deterministic evidence profiles for threshold anomalies."""
 
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime
 import math
 from typing import Any
 
 from app.models.observation import Observation
+from app.monitoring.data_quality import parse_snapshot_timestamp
 
 
 RESOURCE_BY_METRIC = {
@@ -111,7 +112,9 @@ def evaluate_significance(
             # can still affect this anomaly's temporal evidence.
             if exact_candidate_time:
                 issue_matches.append(deepcopy(issue))
-            if in_matching_series:
+            if in_matching_series and (
+                issue.get("issue") != "large_time_gap" or exact_candidate_time
+            ):
                 sequence_quality_issues.append(deepcopy(issue))
 
         persistence_status: str
@@ -138,8 +141,11 @@ def evaluate_significance(
             persistence_status = "unknown"
             persistence_detail = "Temporal persistence cannot be assessed reliably from the available data."
         else:
-            persistence_status = "not_confirmed"
-            persistence_detail = "No matching persistent series was returned; this does not establish a transient event."
+            # A missing series can mean a transient spike, too few samples,
+            # a gap, or incomplete measurements. Without reliable negative
+            # evidence those cases cannot be distinguished.
+            persistence_status = "unknown"
+            persistence_detail = "No matching persistent series was returned, and available history cannot establish why."
 
         quality_issues = issue_matches + sequence_quality_issues + unscoped_data_issues + unscoped_temporal_errors
         # Keep each issue once when it is relevant to both the candidate and series.
@@ -220,7 +226,7 @@ def evaluate_significance(
 
 
 def _finite_number(value: object) -> float | None:
-    if isinstance(value, bool):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     try:
         number = float(value)
@@ -230,15 +236,7 @@ def _finite_number(value: object) -> float | None:
 
 
 def _parse_timestamp(value: object) -> datetime | None:
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is not None:
-        return parsed.astimezone(timezone.utc)
-    return parsed
+    return parse_snapshot_timestamp(value)
 
 
 def _comparable(*values: datetime) -> bool:
@@ -285,7 +283,7 @@ def _resolve_issues(
                 snapshot = snapshots[snapshot_index]
             except (TypeError, ValueError, IndexError):
                 snapshot = None
-            if snapshot is not None:
+            if isinstance(snapshot, dict):
                 issue_time = _parse_timestamp(snapshot.get("timestamp"))
         if issue_time is None:
             unscoped.append(issue_copy)

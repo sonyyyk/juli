@@ -6,6 +6,7 @@ from app.monitoring.history_reader import load_recent_snapshots
 from app.monitoring.anomaly_detector import detect_threshold_anomalies
 from app.monitoring.temporal_analyzer import detect_persistent_anomalies
 from app.monitoring.significance_evaluator import evaluate_significance
+from app.monitoring.data_quality import parse_snapshot_timestamp, parse_usage_percent
 from app.models.observation import Observation
 from app.tools.system.pressure import get_system_pressure
 
@@ -21,90 +22,137 @@ def run_monitoring_cycle(
     max_gap_seconds: float = 15.0,
 ) -> dict[str, object]:
     """Run snapshot analysis and collect current PSI observations."""
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise ValueError("limit must be a positive integer")
+    if isinstance(min_samples, bool) or not isinstance(min_samples, int) or min_samples < 1:
+        raise ValueError("min_samples must be a positive integer")
+    if (
+        isinstance(max_gap_seconds, bool)
+        or not isinstance(max_gap_seconds, (int, float))
+    ):
+        raise ValueError("max_gap_seconds must be a finite positive number")
+    try:
+        max_gap_seconds = float(max_gap_seconds)
+    except (OverflowError, TypeError, ValueError):
+        raise ValueError("max_gap_seconds must be a finite positive number") from None
+    if not math.isfinite(max_gap_seconds) or max_gap_seconds <= 0:
+        raise ValueError("max_gap_seconds must be a finite positive number")
+
     snapshots = load_recent_snapshots(limit=limit)
 
     observations: list[Observation] = []
     data_issues: list[dict[str, str]] = []
+    temporal_errors: list[dict[str, str]] = []
 
     required_metrics = ("cpu_usage", "memory_usage", "disk_usage")
 
+    parsed_times = []
     for index, snapshot in enumerate(snapshots):
-        timestamp = snapshot.get("timestamp")
-
-        if not isinstance(timestamp, str) or not timestamp:
+        if not isinstance(snapshot, dict):
             data_issues.append({
                 "snapshot_index": str(index),
-                "issue": "missing_or_invalid_timestamp",
+                "issue": "invalid_snapshot_structure",
             })
+            temporal_errors.append({
+                "snapshot_index": str(index),
+                "issue": "invalid_snapshot_structure",
+            })
+            parsed_times.append(None)
             continue
+
+        timestamp = snapshot.get("timestamp")
+        parsed_time = parse_snapshot_timestamp(timestamp)
+        parsed_times.append(parsed_time)
+        if parsed_time is None:
+            issue = "missing_or_invalid_timestamp"
+            data_issues.append({"snapshot_index": str(index), "issue": issue})
+            temporal_errors.append({"snapshot_index": str(index), "issue": issue})
 
         for metric in required_metrics:
             value = snapshot.get(metric)
-
-            if value is None:
-                data_issues.append({
-                    "timestamp": timestamp,
-                    "issue": f"{metric}_unavailable",
-                })
-                continue
-
-            try:
-                numeric_value = float(value)
-            except (TypeError, ValueError):
-                data_issues.append({
-                    "timestamp": timestamp,
-                    "issue": f"{metric}_invalid",
-                })
+            numeric_value = parse_usage_percent(value)
+            if numeric_value is None:
+                issue = f"{metric}_unavailable" if value is None else f"{metric}_invalid"
+                entry = {"snapshot_index": str(index), "issue": issue}
+                if isinstance(timestamp, str):
+                    entry["timestamp"] = timestamp
+                data_issues.append(entry)
                 continue
 
             observations.append(Observation(
-                timestamp=timestamp,
+                timestamp=timestamp if isinstance(timestamp, str) else "",
                 source="system_snapshots",
                 metric=metric,
                 value=numeric_value,
                 unit="%",
             ))
 
+    # Collection order is the only ordering evidence available from the
+    # schema. Report duplicate/reversed timestamps and make temporal results
+    # unavailable instead of sorting rows and implying a reliable sequence.
+    seen_times: dict[datetime, int] = {}
+    chronology_unreliable = False
+    previous_time = None
+    for index, parsed_time in enumerate(parsed_times):
+        if parsed_time is None:
+            chronology_unreliable = True
+            continue
+        if parsed_time in seen_times:
+            chronology_unreliable = True
+            for affected_index in (seen_times[parsed_time], index):
+                issue = {"snapshot_index": str(affected_index), "issue": "duplicate_timestamp"}
+                data_issues.append(issue)
+                temporal_errors.append(issue.copy())
+        if previous_time is not None and parsed_time < previous_time:
+            chronology_unreliable = True
+            issue = {"snapshot_index": str(index), "issue": "out_of_order_timestamp"}
+            data_issues.append(issue)
+            temporal_errors.append(issue.copy())
+        seen_times.setdefault(parsed_time, index)
+        previous_time = parsed_time
+
+    if chronology_unreliable:
+        temporal_errors.append({
+            "issue": "temporal_sequence_unreliable",
+            "detail": "Snapshot timestamps are missing, duplicated, or not in collection order.",
+        })
+
+    for index in range(1, len(parsed_times)):
+        previous_time = parsed_times[index - 1]
+        current_time = parsed_times[index]
+        if previous_time is None or current_time is None or current_time <= previous_time:
+            continue
+        gap = (current_time - previous_time).total_seconds()
+        if gap > max_gap_seconds:
+            timestamp = snapshots[index].get("timestamp")
+            data_issues.append({
+                "snapshot_index": str(index),
+                "timestamp": str(timestamp),
+                "previous_timestamp": str(snapshots[index - 1].get("timestamp")),
+                "issue": "large_time_gap",
+                "gap_seconds": str(gap),
+                "max_gap_seconds": str(max_gap_seconds),
+            })
+
     threshold_anomalies = detect_threshold_anomalies(observations)
 
     pressure_observations, pressure_issues = _collect_pressure_observations()
 
-    valid_snapshots: list[dict[str, object]] = []
-    temporal_errors: list[dict[str, str]] = []
-
-    for index, snapshot in enumerate(snapshots):
-        timestamp = snapshot.get("timestamp")
-
-        if not isinstance(timestamp, str) or not timestamp:
-            continue
-
-        if any(snapshot.get(metric) is None for metric in required_metrics):
-            continue
-
-        try:
-            for metric in required_metrics:
-                float(snapshot[metric])
-        except (TypeError, ValueError):
-            temporal_errors.append({
-                "snapshot_index": str(index),
-                "issue": "invalid_metric_value",
-            })
-            continue
-
-        valid_snapshots.append(snapshot)
-
-    try:
-        persistent_anomalies = detect_persistent_anomalies(
-            snapshots=valid_snapshots,
-            min_samples=min_samples,
-            max_gap_seconds=max_gap_seconds,
-        )
-    except (KeyError, TypeError, ValueError) as exc:
+    if chronology_unreliable:
         persistent_anomalies = []
-        temporal_errors.append({
-            "issue": "temporal_analysis_failed",
-            "detail": str(exc),
-        })
+    else:
+        try:
+            persistent_anomalies = detect_persistent_anomalies(
+                snapshots=snapshots,
+                min_samples=min_samples,
+                max_gap_seconds=max_gap_seconds,
+            )
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            persistent_anomalies = []
+            temporal_errors.append({
+                "issue": "temporal_analysis_failed",
+                "detail": str(exc),
+            })
 
     significance_assessments = evaluate_significance(
         threshold_anomalies=threshold_anomalies,
@@ -162,6 +210,18 @@ def _collect_pressure_observations() -> tuple[list[Observation], list[dict[str, 
     resources = data.get("resources")
     unavailable = data.get("unavailable", {})
     malformed = data.get("malformed", {})
+    if not isinstance(unavailable, dict):
+        issues.append({
+            "issue": "psi_malformed_result",
+            "detail": "PSI unavailable field must be a mapping.",
+        })
+        unavailable = {}
+    if not isinstance(malformed, dict):
+        issues.append({
+            "issue": "psi_malformed_result",
+            "detail": "PSI malformed field must be a mapping.",
+        })
+        malformed = {}
     if not isinstance(resources, dict):
         issues.append({
             "issue": "psi_malformed_result",
@@ -169,9 +229,9 @@ def _collect_pressure_observations() -> tuple[list[Observation], list[dict[str, 
         })
         resources = {}
 
-    for resource, detail in unavailable.items() if isinstance(unavailable, dict) else ():
+    for resource, detail in unavailable.items():
         issues.append({"issue": "psi_unavailable", "resource": str(resource), "detail": str(detail)})
-    for resource, detail in malformed.items() if isinstance(malformed, dict) else ():
+    for resource, detail in malformed.items():
         issues.append({"issue": "psi_malformed", "resource": str(resource), "detail": str(detail)})
 
     sampled_at = datetime.now(timezone.utc).isoformat()

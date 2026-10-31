@@ -4,6 +4,8 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from app.agent.core import AgentCore
+
 
 DATABASE_PATH = Path("data/juli.db")
 
@@ -83,3 +85,45 @@ def dashboard():
 
 
 dashboard()
+
+st.divider()
+st.subheader("JULI Assistant")
+st.caption("Local Ollama model · Monitoring evidence · Read-only diagnostics")
+
+if "juli_agent" not in st.session_state:
+    st.session_state.juli_agent = AgentCore()
+if "juli_chat_messages" not in st.session_state:
+    st.session_state.juli_chat_messages = []
+
+for chat_message in st.session_state.juli_chat_messages:
+    with st.chat_message(chat_message["role"]):
+        st.markdown(chat_message["content"])
+
+if prompt := st.chat_input("Ask JULI about the system or its monitoring evidence"):
+    st.session_state.juli_chat_messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    result = st.session_state.juli_agent.handle_message(prompt)
+    if result["status"] == "success":
+        assistant_text = str(result["response"])
+        st.session_state.juli_chat_messages.append({
+            "role": "assistant",
+            "content": assistant_text,
+        })
+        with st.chat_message("assistant"):
+            st.markdown(assistant_text)
+            if result.get("monitoring_issues"):
+                st.caption("Some Monitoring data is incomplete; JULI was given the available quality issues.")
+    else:
+        error = result.get("error") or {}
+        assistant_text = (
+            f"Local assistant error ({error.get('code', 'UNKNOWN')}): "
+            f"{error.get('message', 'No response was available.')}"
+        )
+        st.session_state.juli_chat_messages.append({
+            "role": "assistant",
+            "content": assistant_text,
+        })
+        with st.chat_message("assistant"):
+            st.error(assistant_text)
