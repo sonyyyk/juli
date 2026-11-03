@@ -1,4 +1,4 @@
-import json
+import logging
 
 from app.agent.core import AgentCore
 from app.llm.interface import LLMError, LLMResult
@@ -24,7 +24,14 @@ def test_agent_builds_context_and_returns_structured_response():
         "snapshots_analyzed": 1,
         "data_issues": [],
         "pressure_observations": [
-            Observation("2026-10-11T10:00:00+00:00", "psi", "psi_cpu", 1.5, "%")
+            Observation(
+                "2026-10-11T10:00:00+00:00",
+                "get_system_pressure",
+                "psi_cpu_some_avg10",
+                1.5,
+                "%",
+                {"resource": "cpu", "stall_type": "some", "window": "avg10"},
+            )
         ],
     }
     agent = AgentCore(provider=provider, monitoring_provider=lambda: monitoring)
@@ -38,7 +45,9 @@ def test_agent_builds_context_and_returns_structured_response():
     assert provider.calls[0][0]["role"] == "system"
     evidence_message = provider.calls[0][1]
     assert evidence_message["role"] == "system"
-    assert '"metric":"psi_cpu"' in evidence_message["content"]
+    assert evidence_message["content"].startswith("Monitoring context")
+    assert "- cpu some: avg10 1.50 / avg60 n/a / avg300 n/a %" in evidence_message["content"]
+    assert "Current structured" not in evidence_message["content"]
     assert provider.calls[0][-1] == {
         "role": "user", "content": "What does this pressure value mean?"
     }
@@ -127,16 +136,68 @@ def test_invalid_provider_result_is_reported():
     assert result["error"]["code"] == "INVALID_PROVIDER_RESULT"
 
 
-def test_agent_serialization_does_not_emit_non_finite_json_numbers():
+def test_agent_context_renders_non_finite_values_as_unknown():
     provider = FakeProvider()
     agent = AgentCore(provider=provider, monitoring_provider=lambda: {})
     result = agent.handle_message(
         "Review this",
-        monitoring_result={"status": "partial", "metric": float("nan")},
+        monitoring_result={
+            "status": "partial",
+            "current": {"timestamp": "2026-10-11T10:00:00+00:00", "cpu_usage": float("nan")},
+        },
     )
-    payload = provider.calls[0][1]["content"].split("\n", 1)[1]
-    assert json.loads(payload)["metric"] is None
+    content = provider.calls[0][1]["content"]
+    assert "CPU unknown" in content
+    assert "nan" not in content.lower().replace("monitoring", "")
     assert result["status"] == "success"
+
+
+def _large_monitoring_result():
+    anomalies = [
+        {
+            "timestamp": f"2026-10-11T10:{minute:02d}:00+00:00",
+            "metric": "cpu_usage",
+            "value": 95.0,
+            "unit": "%",
+            "threshold": 90.0,
+        }
+        for minute in range(50)
+    ]
+    return {
+        "status": "partial",
+        "freshness": {"state": "stale"},
+        "recent": {
+            "window_minutes": 15,
+            "window_start": "2026-10-11T09:00:00+00:00",
+            "threshold_anomalies": anomalies,
+            "significance_assessments": [{"anomaly": item} for item in anomalies],
+        },
+        "data_issues": [{"issue": f"issue_{index}"} for index in range(100)],
+    }
+
+
+def test_agent_context_respects_configured_limit(monkeypatch):
+    monkeypatch.setenv("JULI_MONITORING_CONTEXT_MAX_CHARS", "1200")
+    provider = FakeProvider()
+    agent = AgentCore(provider=provider, monitoring_provider=_large_monitoring_result)
+    agent.handle_message("Check this")
+    header, context = provider.calls[0][1]["content"].split("\n", 1)
+    assert header == "Monitoring context (deterministic summary from JULI monitoring):"
+    assert len(context) <= 1200
+    assert context.startswith("Data freshness: stale")
+
+
+def test_invalid_context_limit_falls_back_to_default(monkeypatch, caplog):
+    provider = FakeProvider()
+    agent = AgentCore(provider=provider, monitoring_provider=_large_monitoring_result)
+    for invalid in ("abc", "500"):
+        monkeypatch.setenv("JULI_MONITORING_CONTEXT_MAX_CHARS", invalid)
+        with caplog.at_level(logging.WARNING, logger="app.agent.core"):
+            result = agent.handle_message("Check this")
+        assert result["status"] == "success"
+        context = provider.calls[-1][1]["content"].split("\n", 1)[1]
+        assert 1200 < len(context) <= 4000
+    assert "JULI_MONITORING_CONTEXT_MAX_CHARS" in caplog.text
 
 
 def test_clear_conversation_removes_context():

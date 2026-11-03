@@ -1,12 +1,11 @@
 """Evidence-guided Agent Core with bounded conversation context."""
 
 from copy import deepcopy
-from dataclasses import asdict, is_dataclass
-import json
 import logging
-import math
-from typing import Any, Callable
+from typing import Callable
 
+from app.agent.context_builder import MIN_CONTEXT_CHARS, build_monitoring_context
+from app.config import DEFAULT_MONITORING_CONTEXT_MAX_CHARS, get_monitoring_context_max_chars
 from app.llm.config import OllamaConfig
 from app.llm.interface import ChatMessage, LLMError, LLMProvider, LLMResult
 from app.llm.ollama import OllamaProvider
@@ -16,7 +15,7 @@ from app.monitoring.analysis_service import run_monitoring_cycle
 logger = logging.getLogger(__name__)
 
 DEFAULT_SYSTEM_PROMPT = """You are JULI (Just Understanding Light Inside), a local Linux diagnostic assistant.
-Use the supplied Monitoring Analysis as evidence. Distinguish observed facts from hypotheses.
+Use the supplied Monitoring context as evidence. Distinguish observed facts from hypotheses.
 Missing or unavailable data is unknown, never zero. An anomaly is not automatically an incident.
 Correlation or semantic similarity does not establish causality. PSI is additional context and is
 not temporally linked to historical anomalies unless the evidence explicitly establishes that link.
@@ -98,8 +97,8 @@ class AgentCore:
         if monitoring_result is not None:
             messages.append({
                 "role": "system",
-                "content": "Current structured Monitoring Analysis (JSON evidence):\n"
-                + _compact_json(monitoring_result),
+                "content": "Monitoring context (deterministic summary from JULI monitoring):\n"
+                + build_monitoring_context(monitoring_result, _context_max_chars()),
             })
         elif monitoring_issue is not None:
             messages.append({
@@ -187,24 +186,17 @@ def _monitoring_issues(result: dict[str, object] | None) -> list[dict[str, objec
     return deepcopy(issues)
 
 
-def _compact_json(value: Any) -> str:
-    return json.dumps(
-        _json_safe(value),
-        ensure_ascii=False,
-        separators=(",", ":"),
-        allow_nan=False,
-    )
-
-
-def _json_safe(value: Any) -> Any:
-    if is_dataclass(value) and not isinstance(value, type):
-        return _json_safe(asdict(value))
-    if isinstance(value, dict):
-        return {str(key): _json_safe(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_safe(item) for item in value]
-    if isinstance(value, float) and not math.isfinite(value):
-        return None
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    return str(value)
+def _context_max_chars() -> int:
+    """Return the configured context limit, or the default when it is invalid."""
+    try:
+        value = get_monitoring_context_max_chars()
+    except ValueError:
+        value = None
+    if value is None or value < MIN_CONTEXT_CHARS:
+        logger.warning(
+            "Invalid JULI_MONITORING_CONTEXT_MAX_CHARS (must be an integer >= %d); using %d",
+            MIN_CONTEXT_CHARS,
+            DEFAULT_MONITORING_CONTEXT_MAX_CHARS,
+        )
+        return DEFAULT_MONITORING_CONTEXT_MAX_CHARS
+    return value
