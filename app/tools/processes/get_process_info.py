@@ -39,6 +39,17 @@ def get_process_info(pid: int) -> dict:
             data=data,
         )
 
+    except psutil.ZombieProcess:
+        return make_tool_result(
+            tool="get_process_info",
+            status="partial",
+            data={"pid": pid},
+            error={
+                "code": "ZOMBIE_PROCESS",
+                "message": "The process is a zombie; detailed information may be unavailable.",
+            },
+        )
+
     except psutil.NoSuchProcess:
         return make_tool_result(
             tool="get_process_info",
@@ -56,16 +67,5 @@ def get_process_info(pid: int) -> dict:
             error={
                 "code": "ACCESS_DENIED",
                 "message": f"Access denied for process with PID {pid}.",
-            },
-        )
-
-    except psutil.ZombieProcess:
-        return make_tool_result(
-            tool="get_process_info",
-            status="partial",
-            data={"pid": pid},
-            error={
-                "code": "ZOMBIE_PROCESS",
-                "message": "The process is a zombie; detailed information may be unavailable.",
             },
         )

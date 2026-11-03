@@ -200,6 +200,19 @@ def test_get_process_info_errors_have_no_data(monkeypatch, exception, code):
     assert result["error"]["code"] == code
 
 
+def test_get_process_info_zombie_is_partial(monkeypatch):
+    def raising(pid):
+        raise psutil.ZombieProcess(pid)
+
+    monkeypatch.setattr(process_info_module.psutil, "Process", raising)
+
+    result = process_info_module.get_process_info(123)
+
+    assert result["status"] == "partial"
+    assert result["data"] == {"pid": 123}
+    assert result["error"]["code"] == "ZOMBIE_PROCESS"
+
+
 def test_get_process_info_success_shape(monkeypatch):
     process = MagicMock()
     process.pid = 42
