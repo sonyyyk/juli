@@ -1,7 +1,8 @@
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import math
 
+from app.config import get_collector_interval_seconds, get_recent_window_minutes
 from app.monitoring.history_reader import load_recent_snapshots
 from app.monitoring.anomaly_detector import detect_threshold_anomalies
 from app.monitoring.temporal_analyzer import detect_persistent_anomalies
@@ -20,8 +21,15 @@ def run_monitoring_cycle(
     limit: int = 1000,
     min_samples: int = 3,
     max_gap_seconds: float = 15.0,
+    recent_window_minutes: float | None = None,
+    now: datetime | None = None,
 ) -> dict[str, object]:
-    """Run snapshot analysis and collect current PSI observations."""
+    """Run snapshot analysis and collect current PSI observations.
+
+    Besides the original keys the result carries ``freshness``, ``current``,
+    ``recent`` and ``historical`` sections. ``recent_window_minutes`` defaults
+    to JULI_RECENT_WINDOW_MINUTES and ``now`` to the current UTC time.
+    """
     if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
         raise ValueError("limit must be a positive integer")
     if isinstance(min_samples, bool) or not isinstance(min_samples, int) or min_samples < 1:
@@ -37,6 +45,8 @@ def run_monitoring_cycle(
         raise ValueError("max_gap_seconds must be a finite positive number") from None
     if not math.isfinite(max_gap_seconds) or max_gap_seconds <= 0:
         raise ValueError("max_gap_seconds must be a finite positive number")
+    window_minutes, now, window_start = _resolve_window(recent_window_minutes, now)
+    stale_after_seconds = 3 * get_collector_interval_seconds()
 
     snapshots = load_recent_snapshots(limit=limit)
 
@@ -164,19 +174,230 @@ def run_monitoring_cycle(
         pressure_issues=pressure_issues,
     )
 
+    freshness, current, freshness_issue = _build_freshness(
+        snapshots, parsed_times, now, stale_after_seconds
+    )
+    recent, historical = _split_recent_and_historical(
+        threshold_anomalies,
+        persistent_anomalies,
+        significance_assessments,
+        parsed_times,
+        snapshots,
+        window_minutes,
+        window_start,
+    )
+
+    # The freshness issue is added only to the returned list, after the
+    # evaluator ran: an unscoped issue would downgrade every assessment.
+    returned_data_issues = list(data_issues)
+    if freshness_issue is not None:
+        returned_data_issues.append(freshness_issue)
+
     return {
-        "status": "partial" if temporal_errors else "success",
+        "status": (
+            "partial"
+            if temporal_errors or freshness["state"] != "fresh"
+            else "success"
+        ),
         "snapshots_analyzed": len(snapshots),
         "threshold_anomalies": threshold_anomalies,
         "threshold_anomalies_found": len(threshold_anomalies),
         "persistent_anomalies": persistent_anomalies,
         "persistent_anomalies_found": len(persistent_anomalies),
-        "data_issues": data_issues,
+        "data_issues": returned_data_issues,
         "temporal_errors": temporal_errors,
         "pressure_observations": pressure_observations,
         "pressure_issues": pressure_issues,
         "significance_assessments": significance_assessments,
+        "freshness": freshness,
+        "current": current,
+        "recent": recent,
+        "historical": historical,
     }
+
+
+def _resolve_window(
+    recent_window_minutes: float | None,
+    now: datetime | None,
+) -> tuple[float, datetime, datetime]:
+    """Validate the window and clock; return (minutes, now in UTC, window start)."""
+    if recent_window_minutes is None:
+        recent_window_minutes = get_recent_window_minutes()
+    if (
+        isinstance(recent_window_minutes, bool)
+        or not isinstance(recent_window_minutes, (int, float))
+        or not math.isfinite(recent_window_minutes)
+        or recent_window_minutes <= 0
+    ):
+        raise ValueError("recent_window_minutes must be a finite positive number")
+
+    if now is None:
+        now = datetime.now(timezone.utc)
+    if not isinstance(now, datetime) or now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("now must be a timezone-aware datetime")
+    now = now.astimezone(timezone.utc)
+
+    try:
+        window_start = now - timedelta(minutes=recent_window_minutes)
+    except OverflowError:
+        raise ValueError("recent_window_minutes is too large") from None
+    return float(recent_window_minutes), now, window_start
+
+
+def _build_freshness(
+    snapshots: list[dict[str, object]],
+    parsed_times: list[datetime | None],
+    now: datetime,
+    stale_after_seconds: int,
+) -> tuple[dict[str, object], dict[str, object] | None, dict[str, str] | None]:
+    """Return (freshness, current values, data issue) for the newest snapshot.
+
+    The newest snapshot is the last one in collection order with a usable
+    timestamp; rows are never re-sorted.
+    """
+    latest_index = next(
+        (
+            index
+            for index in range(len(snapshots) - 1, -1, -1)
+            if parsed_times[index] is not None and isinstance(snapshots[index], dict)
+        ),
+        None,
+    )
+
+    if latest_index is None:
+        freshness = {
+            "latest_snapshot_timestamp": None,
+            "latest_snapshot_age_seconds": None,
+            "stale_after_seconds": stale_after_seconds,
+            "state": "no_data",
+        }
+        issue = {
+            "issue": "no_data",
+            "detail": "No stored snapshot with a valid timestamp is available.",
+            "stale_after_seconds": str(stale_after_seconds),
+        }
+        return freshness, None, issue
+
+    snapshot = snapshots[latest_index]
+    age = (now - parsed_times[latest_index]).total_seconds()
+    if age < 0:
+        state, issue_name = "stale", "snapshot_in_future"
+        detail = "The newest snapshot is timestamped in the future; the clock is unreliable."
+    elif age > stale_after_seconds:
+        state, issue_name = "stale", "stale_data"
+        detail = "The newest snapshot is older than the freshness limit; current state is unknown."
+    else:
+        state, issue_name, detail = "fresh", None, ""
+
+    freshness = {
+        "latest_snapshot_timestamp": snapshot["timestamp"],
+        "latest_snapshot_age_seconds": age,
+        "stale_after_seconds": stale_after_seconds,
+        "state": state,
+    }
+    current = {
+        "timestamp": snapshot["timestamp"],
+        **{
+            metric: parse_usage_percent(snapshot.get(metric))
+            for metric in ("cpu_usage", "memory_usage", "disk_usage")
+        },
+    }
+    issue = None
+    if issue_name is not None:
+        issue = {
+            "issue": issue_name,
+            "detail": detail,
+            "latest_snapshot_timestamp": str(snapshot["timestamp"]),
+            "age_seconds": str(age),
+            "stale_after_seconds": str(stale_after_seconds),
+        }
+    return freshness, current, issue
+
+
+def _split_recent_and_historical(
+    threshold_anomalies: list[dict[str, object]],
+    persistent_anomalies: list[dict[str, object]],
+    significance_assessments: list[dict[str, object]],
+    parsed_times: list[datetime | None],
+    snapshots: list[dict[str, object]],
+    window_minutes: float,
+    window_start: datetime,
+) -> tuple[dict[str, object], dict[str, object]]:
+    """Place results into the recent window or a compact historical summary.
+
+    Only a lower bound is applied, so items timestamped after ``now`` stay
+    visible. A series is recent when it overlaps the window (end >= start).
+    Items whose timestamp cannot be parsed are counted as unplaced.
+    """
+    recent_threshold: list[dict[str, object]] = []
+    recent_series: list[dict[str, object]] = []
+    historical_items: list[tuple[datetime, str, object]] = []  # (time, metric, timestamp)
+    historical_threshold = historical_series = 0
+    unplaced_threshold = unplaced_series = 0
+
+    for anomaly in threshold_anomalies:
+        moment = parse_snapshot_timestamp(anomaly.get("timestamp"))
+        if moment is None:
+            unplaced_threshold += 1
+        elif moment >= window_start:
+            recent_threshold.append(anomaly)
+        else:
+            historical_threshold += 1
+            historical_items.append((moment, str(anomaly.get("metric")), anomaly.get("timestamp")))
+
+    for series in persistent_anomalies:
+        moment = parse_snapshot_timestamp(series.get("end"))
+        if moment is None:
+            unplaced_series += 1
+        elif moment >= window_start:
+            recent_series.append(series)
+        else:
+            historical_series += 1
+            historical_items.append((moment, str(series.get("metric")), series.get("end")))
+
+    recent_assessments = []
+    for assessment in significance_assessments:
+        anomaly = assessment.get("anomaly") if isinstance(assessment, dict) else None
+        moment = (
+            parse_snapshot_timestamp(anomaly.get("timestamp"))
+            if isinstance(anomaly, dict)
+            else None
+        )
+        if moment is not None and moment >= window_start:
+            recent_assessments.append(assessment)
+
+    valid_times = [
+        (moment, snapshot["timestamp"])
+        for moment, snapshot in zip(parsed_times, snapshots)
+        if moment is not None and isinstance(snapshot, dict)
+    ]
+    analyzed_from = min(valid_times, key=lambda item: item[0])[1] if valid_times else None
+    analyzed_to = max(valid_times, key=lambda item: item[0])[1] if valid_times else None
+
+    recent = {
+        "window_minutes": window_minutes,
+        "window_start": window_start.isoformat(),
+        "threshold_anomalies": recent_threshold,
+        "threshold_anomalies_found": len(recent_threshold),
+        "persistent_anomalies": recent_series,
+        "persistent_anomalies_found": len(recent_series),
+        "significance_assessments": recent_assessments,
+    }
+    historical = {
+        "analyzed_from": analyzed_from,
+        "analyzed_to": analyzed_to,
+        "threshold_anomalies_found": historical_threshold,
+        "persistent_anomalies_found": historical_series,
+        "last_anomaly_timestamp": (
+            max(historical_items, key=lambda item: item[0])[2]
+            if historical_items
+            else None
+        ),
+        "metrics": sorted({metric for _, metric, _ in historical_items}),
+        "unplaced_threshold_anomalies": unplaced_threshold,
+        "unplaced_persistent_series": unplaced_series,
+    }
+    return recent, historical
 
 
 def _collect_pressure_observations() -> tuple[list[Observation], list[dict[str, str]]]:
@@ -311,12 +532,16 @@ def analyze_system_history(
     limit: int = 1000,
     min_samples: int = 3,
     max_gap_seconds: float = 15.0,
+    recent_window_minutes: float | None = None,
+    now: datetime | None = None,
 ) -> dict[str, object]:
     """Keep the existing API compatible with current callers."""
     result = run_monitoring_cycle(
         limit=limit,
         min_samples=min_samples,
         max_gap_seconds=max_gap_seconds,
+        recent_window_minutes=recent_window_minutes,
+        now=now,
     )
 
     return {

@@ -68,7 +68,10 @@ def test_analyze_prints_summary_on_empty_database(db_path, capsys):
         assert main.main(["analyze"]) == 0
 
     out = capsys.readouterr().out
-    assert "Monitoring status:" in out
+    assert "Monitoring status: partial" in out
+    assert "Data freshness: no_data" in out
+    assert "Recent: 0 threshold anomalies, 0 persistent series" in out
+    assert "Historical: 0 threshold anomalies, 0 persistent series" in out
     assert "Snapshots analyzed: 0" in out
     assert "Threshold anomalies: 0" in out
     assert "PSI issues:" in out
@@ -101,3 +104,31 @@ def test_invalid_environment_returns_1(db_path, monkeypatch, capsys):
 
     run_collector.assert_not_called()
     assert "JULI_COLLECTOR_INTERVAL_SECONDS" in capsys.readouterr().err
+
+
+def test_analysis_summary_shows_freshness_and_periods():
+    result = {
+        "status": "partial",
+        "snapshots_analyzed": 1000,
+        "threshold_anomalies_found": 4,
+        "persistent_anomalies_found": 1,
+        "freshness": {
+            "state": "stale",
+            "latest_snapshot_timestamp": "2026-10-31T14:23:12+00:00",
+            "latest_snapshot_age_seconds": 259200.4,
+        },
+        "recent": {"threshold_anomalies_found": 0, "persistent_anomalies_found": 0},
+        "historical": {
+            "threshold_anomalies_found": 4,
+            "persistent_anomalies_found": 1,
+            "analyzed_from": "2026-10-31T11:00:00+00:00",
+            "analyzed_to": "2026-10-31T14:23:12+00:00",
+        },
+    }
+
+    text = main.format_analysis_summary(result)
+
+    assert "Data freshness: stale (latest 2026-10-31T14:23:12+00:00, age 259200 s)" in text
+    assert "Recent: 0 threshold anomalies, 0 persistent series" in text
+    assert "Historical: 4 threshold anomalies, 1 persistent series" in text
+    assert "Analyzed period: 2026-10-31T11:00:00+00:00 .. 2026-10-31T14:23:12+00:00" in text

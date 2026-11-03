@@ -1,6 +1,7 @@
 
 import unittest
 import math
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 from app.monitoring.history_reader import load_recent_snapshots
@@ -9,6 +10,10 @@ from app.monitoring.analysis_service import (
     analyze_system_history,
     run_monitoring_cycle,
 )
+
+
+# A clock a few seconds after the fixed 2026-10-11 snapshots, so they are fresh.
+FIXTURE_NOW = datetime(2026, 10, 11, 10, 0, 20, tzinfo=timezone.utc)
 
 
 class TestMonitoringIntegration(unittest.TestCase):
@@ -92,7 +97,7 @@ class TestMonitoringIntegration(unittest.TestCase):
                 "error": {"code": "PSI_UNAVAILABLE", "message": "No PSI data"},
             },
         ):
-            result = analyze_system_history(limit=3)
+            result = analyze_system_history(limit=3, now=FIXTURE_NOW)
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["snapshots_analyzed"], 3)
         self.assertEqual(result["anomalies_found"], 0)
@@ -113,7 +118,7 @@ class TestMonitoringIntegration(unittest.TestCase):
             "app.monitoring.analysis_service.load_recent_snapshots",
             return_value=snapshots,
         ):
-            result = analyze_system_history(limit=3)
+            result = analyze_system_history(limit=3, now=FIXTURE_NOW)
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["snapshots_analyzed"], 3)
         self.assertEqual(result["anomalies_found"], 1)
@@ -133,7 +138,7 @@ class TestMonitoringIntegration(unittest.TestCase):
             "app.monitoring.analysis_service.load_recent_snapshots",
             return_value=snapshots,
         ):
-            result = run_monitoring_cycle(limit=3)
+            result = run_monitoring_cycle(limit=3, now=FIXTURE_NOW)
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["threshold_anomalies_found"], 1)
         self.assertEqual(result["threshold_anomalies"][0]["metric"], "cpu_usage")
@@ -152,7 +157,7 @@ class TestMonitoringIntegration(unittest.TestCase):
             "app.monitoring.analysis_service.load_recent_snapshots",
             return_value=snapshots,
         ):
-            result = run_monitoring_cycle(limit=1)
+            result = run_monitoring_cycle(limit=1, now=FIXTURE_NOW)
 
         self.assertEqual(result["status"], "success")
         self.assertTrue(
@@ -449,7 +454,7 @@ class TestMonitoringIntegration(unittest.TestCase):
             patch("app.monitoring.analysis_service.load_recent_snapshots", return_value=snapshots),
             patch("app.monitoring.analysis_service.get_system_pressure", return_value=tool_error),
         ):
-            result = run_monitoring_cycle()
+            result = run_monitoring_cycle(now=FIXTURE_NOW)
 
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["snapshots_analyzed"], 3)

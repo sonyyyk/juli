@@ -99,8 +99,25 @@ def _analyze(args: argparse.Namespace) -> int:
 
 def format_analysis_summary(result: dict[str, object]) -> str:
     """Return a short text summary of a monitoring cycle result."""
+    freshness = _section(result, "freshness")
+    recent = _section(result, "recent")
+    historical = _section(result, "historical")
+
+    freshness_line = f"Data freshness: {freshness.get('state', 'unknown')}"
+    if freshness.get("latest_snapshot_timestamp") is not None:
+        age = freshness.get("latest_snapshot_age_seconds")
+        age_text = f"{age:.0f} s" if isinstance(age, (int, float)) else "unknown"
+        freshness_line += (
+            f" (latest {freshness['latest_snapshot_timestamp']}, age {age_text})"
+        )
+
     lines = [
         f"Monitoring status: {result.get('status')}",
+        freshness_line,
+        _anomaly_line("Recent", recent),
+        _anomaly_line("Historical", historical),
+        "Analyzed period: "
+        f"{historical.get('analyzed_from')} .. {historical.get('analyzed_to')}",
         f"Snapshots analyzed: {result.get('snapshots_analyzed')}",
         f"Threshold anomalies: {result.get('threshold_anomalies_found')}",
         f"Persistent anomalies: {result.get('persistent_anomalies_found')}",
@@ -111,6 +128,18 @@ def format_analysis_summary(result: dict[str, object]) -> str:
         f"PSI issues: {_count(result.get('pressure_issues'))}",
     ]
     return "\n".join(lines)
+
+
+def _section(result: dict[str, object], key: str) -> dict[str, object]:
+    value = result.get(key)
+    return value if isinstance(value, dict) else {}
+
+
+def _anomaly_line(label: str, section: dict[str, object]) -> str:
+    return (
+        f"{label}: {section.get('threshold_anomalies_found', 'unknown')} threshold anomalies, "
+        f"{section.get('persistent_anomalies_found', 'unknown')} persistent series"
+    )
 
 
 def _count(value: object) -> int | str:
