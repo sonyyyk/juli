@@ -1,9 +1,13 @@
+import logging
 import time
 from datetime import datetime, timezone
 import math
 
 from app.tools.system.state import get_system_state
 from app.core.database import get_connection
+
+
+logger = logging.getLogger(__name__)
 
 
 def collect_system_snapshot() -> None:
@@ -101,7 +105,14 @@ def run_collector(interval_seconds: int = 10) -> None:
 
     try:
         while True:
-            collect_system_snapshot()
+            try:
+                collect_system_snapshot()
+            except (RuntimeError, ValueError) as exc:
+                # A failed measurement or validation skips this cycle only.
+                # Database errors are deliberately not caught: they stop the Collector.
+                logger.warning(
+                    "Snapshot skipped: %s: %s", type(exc).__name__, exc
+                )
             time.sleep(interval_seconds)
 
     except KeyboardInterrupt:

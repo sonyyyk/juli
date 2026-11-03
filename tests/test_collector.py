@@ -118,7 +118,7 @@ def test_incomplete_aggregate_response_does_not_write_snapshot(
     assert read_snapshots() == []
 
 
-def test_child_tool_error_is_wrapped_as_success_with_incomplete_data(
+def test_partial_system_state_does_not_write_snapshot(
     temporary_database, monkeypatch
 ):
     monkeypatch.setattr(
@@ -127,7 +127,7 @@ def test_child_tool_error_is_wrapped_as_success_with_incomplete_data(
         lambda: {
             "tool": "get_cpu_usage",
             "status": "error",
-            "data": {},
+            "data": None,
             "error": {"code": "CPU_READ_ERROR", "message": "read failed"},
         },
     )
@@ -153,10 +153,11 @@ def test_child_tool_error_is_wrapped_as_success_with_incomplete_data(
     )
 
     aggregate = system_state.get_system_state()
-    assert aggregate["status"] == "success"
-    assert aggregate["data"]["cpu"] == {}
+    assert aggregate["status"] == "partial"
+    assert aggregate["data"]["cpu"] is None
+    assert aggregate["error"]["code"] == "SYSTEM_STATE_PARTIAL"
 
-    with pytest.raises(ValueError):
+    with pytest.raises(RuntimeError, match="Failed to collect system state"):
         collector.collect_system_snapshot()
 
     assert read_snapshots() == []
@@ -272,3 +273,39 @@ def test_positive_integer_collector_interval_runs_until_controlled_stop():
 
     collect_snapshot.assert_called_once_with()
     sleep.assert_called_once_with(5)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [RuntimeError("Failed to collect system state"), ValueError("cpu invalid")],
+)
+def test_run_collector_continues_after_failed_cycle(failure, caplog):
+    collect_snapshot = Mock(side_effect=[failure, None, None])
+    sleep = Mock(side_effect=[None, None, KeyboardInterrupt])
+
+    with (
+        patch.object(collector, "collect_system_snapshot", collect_snapshot),
+        patch.object(collector.time, "sleep", sleep),
+        caplog.at_level("WARNING", logger=collector.logger.name),
+    ):
+        collector.run_collector(5)
+
+    assert collect_snapshot.call_count == 3
+    assert sleep.call_count == 3
+    assert "Snapshot skipped" in caplog.text
+    assert type(failure).__name__ in caplog.text
+
+
+def test_run_collector_stops_on_database_error():
+    collect_snapshot = Mock(side_effect=sqlite3.OperationalError("no such table"))
+    sleep = Mock()
+
+    with (
+        patch.object(collector, "collect_system_snapshot", collect_snapshot),
+        patch.object(collector.time, "sleep", sleep),
+    ):
+        with pytest.raises(sqlite3.OperationalError):
+            collector.run_collector(5)
+
+    collect_snapshot.assert_called_once_with()
+    sleep.assert_not_called()

@@ -23,7 +23,6 @@ def get_memory_usage() -> dict:
         return make_tool_result(
             tool="get_memory_usage",
             status="error",
-            data={},
             error={
                 "code": "MEMORY_READ_ERROR",
                 "message": str(error),

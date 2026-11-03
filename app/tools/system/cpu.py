@@ -19,7 +19,6 @@ def get_cpu_usage() -> dict:
         return make_tool_result(
             tool="get_cpu_usage",
             status="error",
-            data={},
             error={
                 "code": "CPU_READ_ERROR",
                 "message": str(error),

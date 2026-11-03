@@ -24,7 +24,6 @@ def get_disk_usage() -> dict:
         return make_tool_result(
             tool="get_disk_usage",
             status="error",
-            data={},
             error={
                 "code": "DISK_READ_ERROR",
                 "message": str(error),

@@ -1,6 +1,8 @@
 
 import psutil
 
+from app.tools.result import make_tool_result
+
 
 def list_processes() -> dict:
     """Return a read-only snapshot of running processes."""
@@ -31,15 +33,15 @@ def list_processes() -> dict:
         except psutil.AccessDenied:
             inaccessible_count += 1
 
-    return {
-        "tool": "list_processes",
-        "status": "partial" if inaccessible_count else "success",
-        "data": {
+    return make_tool_result(
+        tool="list_processes",
+        status="partial" if inaccessible_count else "success",
+        data={
             "processes": processes,
             "process_count": len(processes),
             "inaccessible_count": inaccessible_count,
         },
-        "error": (
+        error=(
             {
                 "code": "ACCESS_DENIED",
                 "message": "Some processes could not be inspected.",
@@ -47,4 +49,4 @@ def list_processes() -> dict:
             if inaccessible_count
             else None
         ),
-    }
+    )
