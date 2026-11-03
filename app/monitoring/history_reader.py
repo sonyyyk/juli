@@ -35,3 +35,15 @@ def load_recent_snapshots(
         }
         for row in rows
     ]
+
+
+def count_snapshots() -> int:
+    """Return the total number of stored system snapshots."""
+    connection = get_connection()
+
+    try:
+        return connection.execute(
+            "SELECT COUNT(*) FROM system_snapshots"
+        ).fetchone()[0]
+    finally:
+        connection.close()

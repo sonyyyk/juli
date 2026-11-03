@@ -90,3 +90,25 @@ class TestHistoryReader(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_count_snapshots_on_empty_and_filled_database(tmp_path, monkeypatch):
+    from app.core import database
+    from app.monitoring.history_reader import count_snapshots
+
+    monkeypatch.setenv("JULI_DB_PATH", str(tmp_path / "count.db"))
+    database.ensure_schema()
+    assert count_snapshots() == 0
+
+    connection = database.get_connection()
+    try:
+        connection.executemany(
+            "INSERT INTO system_snapshots (timestamp, cpu_usage, memory_usage, disk_usage)"
+            " VALUES (?, ?, ?, ?)",
+            [("2026-10-11T10:00:00+00:00", 1.0, 2.0, 3.0)] * 5,
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    assert count_snapshots() == 5

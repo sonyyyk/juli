@@ -6,4 +6,5 @@ __pycache__/
 .vscode/
 .idea/
 data/*.db
+data/*.db.backup-*
 data/raw/

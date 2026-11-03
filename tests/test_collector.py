@@ -11,7 +11,7 @@ from app.tools.system import state as system_state
 @pytest.fixture
 def temporary_database(monkeypatch, tmp_path):
     database_path = tmp_path / "collector-test.db"
-    monkeypatch.setattr(database, "DATABASE_PATH", database_path)
+    monkeypatch.setenv("JULI_DB_PATH", str(database_path))
     database.initialize_database()
     return database_path
 
@@ -309,3 +309,51 @@ def test_run_collector_stops_on_database_error():
 
     collect_snapshot.assert_called_once_with()
     sleep.assert_not_called()
+
+
+def test_collect_snapshot_works_on_empty_directory_without_manual_init(
+    tmp_path, monkeypatch
+):
+    database_path = tmp_path / "fresh" / "juli.db"
+    monkeypatch.setenv("JULI_DB_PATH", str(database_path))
+    monkeypatch.setattr(collector, "get_system_state", valid_system_state)
+    assert not database_path.exists()
+
+    collector.collect_system_snapshot()
+
+    assert len(read_snapshots()) == 1
+    assert database.get_schema_version() == 1
+
+
+def test_failed_measurement_does_not_create_database(tmp_path, monkeypatch):
+    database_path = tmp_path / "juli.db"
+    monkeypatch.setenv("JULI_DB_PATH", str(database_path))
+    monkeypatch.setattr(
+        collector,
+        "get_system_state",
+        lambda: {
+            "tool": "get_system_state",
+            "status": "error",
+            "data": None,
+            "error": {"code": "SYSTEM_STATE_UNAVAILABLE", "message": "failed"},
+        },
+    )
+
+    with pytest.raises(RuntimeError):
+        collector.collect_system_snapshot()
+
+    assert not database_path.exists()
+
+
+def test_run_collector_uses_configured_default_interval(monkeypatch):
+    monkeypatch.setenv("JULI_COLLECTOR_INTERVAL_SECONDS", "7")
+    collect_snapshot = Mock()
+    sleep = Mock(side_effect=KeyboardInterrupt)
+
+    with (
+        patch.object(collector, "collect_system_snapshot", collect_snapshot),
+        patch.object(collector.time, "sleep", sleep),
+    ):
+        collector.run_collector()
+
+    sleep.assert_called_once_with(7)

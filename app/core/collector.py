@@ -4,7 +4,8 @@ from datetime import datetime, timezone
 import math
 
 from app.tools.system.state import get_system_state
-from app.core.database import get_connection
+from app.config import get_collector_interval_seconds
+from app.core.database import ensure_schema, get_connection
 
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,9 @@ def collect_system_snapshot() -> None:
         for resource in ("cpu", "memory", "disk")
     }
     timestamp = datetime.now(timezone.utc).isoformat()
+
+    # Only after a successful measurement: a failed one must not create the database.
+    ensure_schema()
 
     connection = get_connection()
     try:
@@ -91,8 +95,13 @@ def _validated_usage_percent(data: dict, resource: str) -> float:
     return float(value)
 
 
-def run_collector(interval_seconds: int = 10) -> None:
-    """Continuously collect system snapshots."""
+def run_collector(interval_seconds: int | None = None) -> None:
+    """Continuously collect system snapshots.
+
+    The interval defaults to JULI_COLLECTOR_INTERVAL_SECONDS (10 s).
+    """
+    if interval_seconds is None:
+        interval_seconds = get_collector_interval_seconds()
     if (
         isinstance(interval_seconds, bool)
         or not isinstance(interval_seconds, int)

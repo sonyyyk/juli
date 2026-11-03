@@ -1,33 +1,22 @@
-import sqlite3
-from pathlib import Path
-
 import pandas as pd
 import streamlit as st
 
 from app.agent.core import AgentCore
+from app.core.database import ensure_schema
+from app.monitoring.history_reader import count_snapshots, load_recent_snapshots
 
 
-DATABASE_PATH = Path("data/juli.db")
+DASHBOARD_SNAPSHOT_LIMIT = 2000
+SNAPSHOT_COLUMNS = ["timestamp", "cpu_usage", "memory_usage", "disk_usage"]
+
+ensure_schema()
 
 
 def load_snapshots() -> pd.DataFrame:
-    """Load system snapshots from SQLite."""
-    connection = sqlite3.connect(DATABASE_PATH)
+    """Load the latest snapshots from SQLite in chronological order."""
+    rows = load_recent_snapshots(limit=DASHBOARD_SNAPSHOT_LIMIT)
 
-    query = """
-        SELECT
-            timestamp,
-            cpu_usage,
-            memory_usage,
-            disk_usage
-        FROM system_snapshots
-        ORDER BY timestamp
-    """
-
-    data = pd.read_sql_query(query, connection)
-    connection.close()
-
-    return data
+    return pd.DataFrame(rows, columns=SNAPSHOT_COLUMNS)
 
 
 st.set_page_config(
@@ -78,7 +67,11 @@ def dashboard():
     col1, col2 = st.columns(2)
 
     with col1:
-        st.write(f"**Snapshots collected:** {len(data)}")
+        total = count_snapshots()
+        st.write(
+            f"**Snapshots collected:** {total} "
+            f"(chart: latest {min(total, DASHBOARD_SNAPSHOT_LIMIT)})"
+        )
 
     with col2:
         st.write(f"**Last update:** {latest['timestamp']}")

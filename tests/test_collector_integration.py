@@ -19,11 +19,7 @@ def successful_tool_result(tool, usage_percent):
 def test_collector_history_reader_and_monitoring_analysis_end_to_end(
     monkeypatch, tmp_path
 ):
-    monkeypatch.setattr(
-        database,
-        "DATABASE_PATH",
-        tmp_path / "monitoring-integration.db",
-    )
+    monkeypatch.setenv("JULI_DB_PATH", str(tmp_path / "monitoring-integration.db"))
     database.initialize_database()
 
     cpu_values = [95.0, 96.0, 94.5]
