@@ -8,10 +8,15 @@ import logging
 import sqlite3
 import sys
 
+from app.agent.core import AgentCore, monitoring_context_message
 from app.config import get_collector_interval_seconds, get_db_path
 from app.core.collector import run_collector
 from app.core.database import ensure_schema, get_schema_version
+from app.llm.config import OllamaConfig
+from app.llm.ollama import OllamaProvider
 from app.monitoring.analysis_service import run_monitoring_cycle
+
+CHAT_HELP = "Commands: /context - last context sent to the model, /clear - forget the conversation, /exit - quit."
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -59,7 +64,17 @@ def _build_parser() -> argparse.ArgumentParser:
     analyze = subparsers.add_parser(
         "analyze", help="run one monitoring cycle and print a short summary"
     )
+    analyze.add_argument(
+        "--context",
+        action="store_true",
+        help="print the monitoring context the language model receives instead of the summary",
+    )
     analyze.set_defaults(handler=_analyze)
+
+    chat = subparsers.add_parser(
+        "chat", help="chat with JULI in the terminal (local Ollama model)"
+    )
+    chat.set_defaults(handler=_chat)
 
     return parser
 
@@ -93,8 +108,86 @@ def _collect(args: argparse.Namespace) -> int:
 
 def _analyze(args: argparse.Namespace) -> int:
     ensure_schema()
-    print(format_analysis_summary(run_monitoring_cycle()))
+    result = run_monitoring_cycle()
+    if args.context:
+        text = monitoring_context_message(result)
+        print(text)
+        print(f"({len(text)} characters)", file=sys.stderr)
+    else:
+        print(format_analysis_summary(result))
     return 0
+
+
+def _chat(args: argparse.Namespace) -> int:
+    config = OllamaConfig.from_environment()
+    ensure_schema()
+    agent = AgentCore(
+        provider=OllamaProvider(config),
+        monitoring_provider=run_monitoring_cycle,
+    )
+    print(
+        f"JULI chat - model {config.model}, thinking {'on' if config.think else 'off'}, "
+        f"num_ctx {config.num_ctx}."
+    )
+    print(CHAT_HELP)
+    while True:
+        try:
+            text = input("\nyou> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 0
+        if not text:
+            continue
+        command = text.lower()
+        if command in ("/exit", "/quit"):
+            return 0
+        if command == "/clear":
+            agent.clear_conversation()
+            print("Conversation cleared.")
+            continue
+        if command == "/context":
+            print(format_messages(agent.last_messages))
+            continue
+        if command.startswith("/"):
+            print(f"Unknown command. {CHAT_HELP}")
+            continue
+        try:
+            result = agent.handle_message(text)
+        except KeyboardInterrupt:
+            print("\nInterrupted.")
+            continue
+        if result["status"] == "success":
+            print(f"\njuli> {result['response']}")
+        else:
+            error = result.get("error") or {}
+            print(f"\nerror: {error.get('code', 'UNKNOWN')}: {error.get('message', '')}")
+        print(format_usage(result.get("model"), result.get("usage")))
+
+
+def format_messages(messages: list[dict[str, str]]) -> str:
+    """Return the messages sent to the model, one role-labelled section each."""
+    if not messages:
+        return "No context has been sent to the model yet."
+    return "\n\n".join(f"[{message['role']}]\n{message['content']}" for message in messages)
+
+
+def format_usage(model: object, usage: object) -> str:
+    """Return one line with the model name, token counts, and duration."""
+    usage = usage if isinstance(usage, dict) else {}
+    duration = usage.get("total_duration_ns")
+    parts = [
+        f"model {model or 'unknown'}",
+        f"prompt {_known(usage.get('prompt_eval_count'))} tokens",
+        f"output {_known(usage.get('eval_count'))} tokens",
+        f"{duration / 1e9:.1f} s" if isinstance(duration, int) else "time unknown",
+    ]
+    if usage.get("thinking_chars") is not None:
+        parts.append(f"thinking {usage['thinking_chars']} chars (not shown)")
+    return "[" + ", ".join(parts) + "]"
+
+
+def _known(value: object) -> object:
+    return "unknown" if value is None else value
 
 
 def format_analysis_summary(result: dict[str, object]) -> str:

@@ -42,6 +42,8 @@ CURRENT_METRICS = (("cpu_usage", "CPU"), ("memory_usage", "RAM"), ("disk_usage",
 PSI_RESOURCES = ("cpu", "memory", "io")
 PSI_STALL_TYPES = ("some", "full")
 PSI_WINDOWS = ("avg10", "avg60", "avg300")
+PSI_WINDOW_LABELS = {"avg10": "avg10 (10 s)", "avg60": "avg60 (60 s)", "avg300": "avg300 (300 s)"}
+PSI_NAME = "PSI (Pressure Stall Information)"
 _PSI_METRIC = re.compile(r"psi_(cpu|memory|io)_(some|full)_(avg10|avg60|avg300)")
 _STATUS = re.compile(r"[a-z_]{1,20}")
 
@@ -362,13 +364,13 @@ def _psi_block(result: object) -> _Block:
 
     if not grid:
         if result is None:
-            return _Block("PSI pressure: unknown.", empty_text=None)
+            return _Block(f"{PSI_NAME}: unknown.", empty_text=None)
         counts = _issue_counts(_get(result, "pressure_issues"))
         items = [f"- reason: {name} ({count})" for name, count in counts]
         if other:
             items.append(f"- {other} unrecognized pressure observation(s) not shown")
         return _Block(
-            "PSI pressure: unavailable.",
+            f"{PSI_NAME}: unavailable.",
             items,
             empty_text="no PSI observations or issues reported",
             collapsed="PSI omitted (unavailable).",
@@ -376,14 +378,14 @@ def _psi_block(result: object) -> _Block:
 
     newest = _newest_first(sampled_at, lambda item: item)
     header = (
-        f"PSI pressure (sampled at {_ts(newest[0] if newest else None)}, when this analysis ran; "
-        "NOT temporally linked to the anomalies above):"
+        f"{PSI_NAME}, sampled at {_ts(newest[0] if newest else None)} when this analysis ran; "
+        "NOT temporally linked to the anomalies above:"
     )
     items = []
     for resource in PSI_RESOURCES:
         for stall in PSI_STALL_TYPES:
             values = " / ".join(
-                f"{window} {_psi_value(grid.get((resource, stall, window)))}"
+                f"{PSI_WINDOW_LABELS[window]} {_psi_value(grid.get((resource, stall, window)))}"
                 for window in PSI_WINDOWS
             )
             items.append(f"- {resource} {stall}: {values} %")

@@ -203,9 +203,9 @@ def test_psi_is_rendered_once_from_top_level_observations_only():
     result = make_result(recent_anomalies=5, profile_psi_value=42.4242)
     result["pressure_observations"] = psi_observations(7.77)
     text = build_monitoring_context(result, 4000)
-    assert text.count("PSI pressure (sampled at") == 1
+    assert text.count("PSI (Pressure Stall Information), sampled at") == 1
     assert "42.42" not in text
-    assert text.count("avg10 7.77 / avg60 7.77 / avg300 7.77 %") == 6
+    assert text.count("avg10 (10 s) 7.77 / avg60 (60 s) 7.77 / avg300 (300 s) 7.77 %") == 6
     assert "NOT temporally linked" in text
 
 
@@ -213,13 +213,13 @@ def test_missing_psi_values_are_na_and_unavailable_psi_lists_reasons():
     result = make_result()
     result["pressure_observations"] = psi_observations()[:3]
     text = build_monitoring_context(result, 4000)
-    assert "- cpu some: avg10 0.25 / avg60 0.25 / avg300 0.25 %" in text
-    assert "- io full: avg10 n/a / avg60 n/a / avg300 n/a %" in text
+    assert "- cpu some: avg10 (10 s) 0.25 / avg60 (60 s) 0.25 / avg300 (300 s) 0.25 %" in text
+    assert "- io full: avg10 (10 s) n/a / avg60 (60 s) n/a / avg300 (300 s) n/a %" in text
 
     result["pressure_observations"] = []
     result["pressure_issues"] = [{"issue": "psi_unavailable", "resource": "cpu"}] * 2
     text = build_monitoring_context(result, 4000)
-    assert "PSI pressure: unavailable." in text
+    assert "PSI (Pressure Stall Information): unavailable." in text
     assert "- reason: psi_unavailable (2)" in text
 
 

@@ -1,7 +1,7 @@
 import logging
 
 from app.agent.core import AgentCore
-from app.llm.interface import LLMError, LLMResult
+from app.llm.interface import LLMError, LLMResult, LLMUsage
 from app.models.observation import Observation
 
 
@@ -46,7 +46,7 @@ def test_agent_builds_context_and_returns_structured_response():
     evidence_message = provider.calls[0][1]
     assert evidence_message["role"] == "system"
     assert evidence_message["content"].startswith("Monitoring context")
-    assert "- cpu some: avg10 1.50 / avg60 n/a / avg300 n/a %" in evidence_message["content"]
+    assert "- cpu some: avg10 (10 s) 1.50 / avg60 (60 s) n/a / avg300 (300 s) n/a %" in evidence_message["content"]
     assert "Current structured" not in evidence_message["content"]
     assert provider.calls[0][-1] == {
         "role": "user", "content": "What does this pressure value mean?"
@@ -205,3 +205,32 @@ def test_clear_conversation_removes_context():
     agent.handle_message("hello")
     agent.clear_conversation()
     assert agent.history == []
+
+
+def test_usage_is_returned_and_last_messages_are_kept():
+    usage = LLMUsage(prompt_eval_count=876, eval_count=567, total_duration_ns=10, done_reason="stop")
+    provider = FakeProvider(LLMResult(status="success", content="ok", model="m", usage=usage))
+    agent = AgentCore(provider=provider, monitoring_provider=lambda: {"status": "success"})
+    assert agent.last_messages == []
+
+    result = agent.handle_message("Що зараз відбувається?")
+
+    assert result["usage"] == usage.to_dict()
+    assert agent.last_messages == provider.calls[0]
+    assert agent.last_messages[1]["content"].startswith("Monitoring context")
+    assert agent.last_messages[-1] == {"role": "user", "content": "Що зараз відбувається?"}
+    agent.last_messages.clear()
+    assert len(agent.last_messages) == 3
+
+
+def test_usage_is_none_when_provider_reports_none_or_fails():
+    agent = AgentCore(provider=FakeProvider(), monitoring_provider=lambda: {"status": "success"})
+    assert agent.handle_message("Hi")["usage"] is None
+    assert agent.handle_message("  ")["usage"] is None
+    failing = FakeProvider(LLMResult(
+        status="error", content=None, model="m", error=LLMError("EMPTY_RESPONSE", "empty"),
+        usage=LLMUsage(thinking_chars=120),
+    ))
+    result = AgentCore(provider=failing, monitoring_provider=lambda: {}).handle_message("Hi")
+    assert result["status"] == "error"
+    assert result["usage"]["thinking_chars"] == 120

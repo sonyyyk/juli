@@ -14,6 +14,8 @@ from app.monitoring.analysis_service import run_monitoring_cycle
 
 logger = logging.getLogger(__name__)
 
+MONITORING_CONTEXT_HEADER = "Monitoring context (deterministic summary from JULI monitoring):\n"
+
 DEFAULT_SYSTEM_PROMPT = """You are JULI (Just Understanding Light Inside), a local Linux diagnostic assistant.
 Use the supplied Monitoring context as evidence. Distinguish observed facts from hypotheses.
 Missing or unavailable data is unknown, never zero. An anomaly is not automatically an incident.
@@ -49,11 +51,17 @@ class AgentCore:
         self.system_prompt = system_prompt.strip()
         self.max_turns = max_turns
         self._history: list[ChatMessage] = []
+        self._last_messages: list[ChatMessage] = []
 
     @property
     def history(self) -> list[ChatMessage]:
         """Return a copy of the successful user/assistant conversation turns."""
         return deepcopy(self._history)
+
+    @property
+    def last_messages(self) -> list[ChatMessage]:
+        """Return a copy of the messages most recently sent to the provider."""
+        return deepcopy(self._last_messages)
 
     def clear_conversation(self) -> None:
         """Clear in-memory conversation context for the current UI session."""
@@ -73,6 +81,7 @@ class AgentCore:
                 "error": {"code": "INVALID_MESSAGE", "message": "Message must be non-empty text."},
                 "monitoring_status": None,
                 "monitoring_issues": [],
+                "usage": None,
             }
 
         monitoring_issue = None
@@ -97,8 +106,7 @@ class AgentCore:
         if monitoring_result is not None:
             messages.append({
                 "role": "system",
-                "content": "Monitoring context (deterministic summary from JULI monitoring):\n"
-                + build_monitoring_context(monitoring_result, _context_max_chars()),
+                "content": monitoring_context_message(monitoring_result),
             })
         elif monitoring_issue is not None:
             messages.append({
@@ -110,6 +118,7 @@ class AgentCore:
             })
         messages.extend(deepcopy(self._history[-2 * self.max_turns:]))
         messages.append({"role": "user", "content": user_message.strip()})
+        self._last_messages = deepcopy(messages)
 
         try:
             result = self.provider.generate(messages)
@@ -133,6 +142,7 @@ class AgentCore:
                 "error": {"code": "INVALID_PROVIDER_RESULT", "message": "LLM provider returned an invalid result."},
                 "monitoring_status": monitoring_result.get("status") if isinstance(monitoring_result, dict) else None,
                 "monitoring_issues": _all_monitoring_issues(monitoring_result, monitoring_issue),
+                "usage": None,
             }
 
         if result.status != "success" or not isinstance(result.content, str) or not result.content.strip():
@@ -147,6 +157,7 @@ class AgentCore:
                 },
                 "monitoring_status": monitoring_result.get("status") if isinstance(monitoring_result, dict) else None,
                 "monitoring_issues": _all_monitoring_issues(monitoring_result, monitoring_issue),
+                "usage": _usage(result),
             }
 
         content = result.content.strip()
@@ -162,7 +173,13 @@ class AgentCore:
             "error": None,
             "monitoring_status": monitoring_result.get("status") if isinstance(monitoring_result, dict) else None,
             "monitoring_issues": _all_monitoring_issues(monitoring_result, monitoring_issue),
+            "usage": _usage(result),
         }
+
+
+def _usage(result: LLMResult) -> dict[str, object] | None:
+    usage = getattr(result, "usage", None)
+    return usage.to_dict() if usage is not None and hasattr(usage, "to_dict") else None
 
 
 def _all_monitoring_issues(
@@ -184,6 +201,13 @@ def _monitoring_issues(result: dict[str, object] | None) -> list[dict[str, objec
         if isinstance(value, list):
             issues.extend(item for item in value if isinstance(item, dict))
     return deepcopy(issues)
+
+
+def monitoring_context_message(monitoring_result: dict[str, object]) -> str:
+    """Return the system message text that carries monitoring evidence to the model."""
+    return MONITORING_CONTEXT_HEADER + build_monitoring_context(
+        monitoring_result, _context_max_chars()
+    )
 
 
 def _context_max_chars() -> int:
