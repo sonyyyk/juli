@@ -359,3 +359,13 @@ def test_aware_non_utc_now_is_normalized():
 
     assert result["freshness"]["latest_snapshot_age_seconds"] == 5.0
     assert result["freshness"]["state"] == "fresh"
+
+
+def test_result_reports_the_thresholds_and_max_gap_it_applied():
+    from app.monitoring.anomaly_detector import DEFAULT_THRESHOLDS
+
+    result = run(series_of(NOW - timedelta(seconds=5), [20.0]))
+
+    assert result["thresholds"] == DEFAULT_THRESHOLDS
+    assert result["thresholds"] is not DEFAULT_THRESHOLDS
+    assert result["max_gap_seconds"] == 15.0

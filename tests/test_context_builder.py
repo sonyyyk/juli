@@ -278,7 +278,9 @@ def test_data_issues_are_counted_by_type_without_details():
     result["temporal_errors"] = [{"issue": "temporal_sequence_unreliable", "detail": "secret"}]
     issues = block(build_monitoring_context(result, 4000), "Data quality issues")
     assert issues.splitlines()[1:] == [
-        "- data: large_time_gap (2)",
+        "- data: large_time_gap (2): gap in data collection: no snapshot was stored for longer "
+        "than the allowed interval, i.e. the Collector was not running (or the machine was off); "
+        "not a network problem; longest gap 60 s",
         "- data: stale_data (1)",
         "- temporal: temporal_sequence_unreliable (1)",
     ]
@@ -395,3 +397,81 @@ def test_context_is_several_times_shorter_than_json_on_realistic_result():
     raw = json.dumps(result, default=lambda o: o.__dict__, separators=(",", ":"))
     text = build_monitoring_context(result, 4000)
     assert len(text) * 4 < len(raw)
+
+
+# --- Task 7: thresholds, trend analysis, collection gaps ----------------------
+
+THRESHOLDS = {"cpu_usage": 90.0, "memory_usage": 90.0, "disk_usage": 90.0}
+THRESHOLDS_LINE = (
+    "Anomaly thresholds (a value above the threshold is a threshold anomaly, not an incident): "
+    "CPU 90.0 %, RAM 90.0 %, Disk 90.0 %."
+)
+
+
+def test_thresholds_are_stated_explicitly_after_latest_values():
+    result = make_result("fresh")
+    result["thresholds"] = dict(THRESHOLDS)
+    blocks = build_monitoring_context(result, 4000).split("\n\n")
+    assert blocks[1].startswith("Latest stored values")
+    assert blocks[2] == THRESHOLDS_LINE
+
+
+def test_thresholds_fit_the_default_limit_with_fifty_anomalies():
+    result = make_result("stale", recent_anomalies=50, historical_anomalies=50)
+    result["thresholds"] = dict(THRESHOLDS)
+    text = build_monitoring_context(result, 4000)
+    assert len(text) <= 4000
+    assert THRESHOLDS_LINE in text
+
+
+@pytest.mark.parametrize("thresholds", [None, {}, "90", {"cpu_usage": None}])
+def test_missing_thresholds_are_reported_not_invented(thresholds):
+    result = make_result("fresh")
+    if thresholds is not None:
+        result["thresholds"] = thresholds
+    text = build_monitoring_context(result, 4000)
+    assert "Anomaly thresholds: not reported." in text
+    assert "90.0 %, RAM" not in text
+
+
+@pytest.mark.parametrize("state", ["fresh", "stale", "no_data"])
+def test_unknown_block_always_says_trend_analysis_is_not_available(state):
+    text = build_monitoring_context(make_result(state), 4000)
+    assert "trend analysis is not available" in block(text, "Unknown or not established")
+
+
+def test_trend_line_survives_minimum_limit_and_missing_result():
+    assert "trend analysis is not available" in build_monitoring_context(None, MIN_CONTEXT_CHARS)
+    result = make_result("stale", recent_anomalies=200, historical_anomalies=200)
+    result["thresholds"] = dict(THRESHOLDS)
+    text = build_monitoring_context(result, MIN_CONTEXT_CHARS)
+    assert len(text) <= MIN_CONTEXT_CHARS
+    assert "trend analysis is not available" in text
+
+
+def test_large_time_gap_is_described_as_a_collection_gap_with_longest_gap():
+    result = make_result("fresh")
+    result["data_issues"] = [
+        {"snapshot_index": "3", "issue": "large_time_gap", "gap_seconds": "60.0"},
+        {"snapshot_index": "9", "issue": "large_time_gap", "gap_seconds": "334800.5"},
+        {"snapshot_index": "12", "issue": "large_time_gap", "gap_seconds": "bad"},
+    ]
+    line = block(build_monitoring_context(result, 4000), "Data quality issues").splitlines()[1]
+    assert line.startswith("- data: large_time_gap (3): gap in data collection")
+    assert "the Collector was not running" in line
+    assert "not a network problem" in line
+    assert line.endswith("longest gap 3.9 days")
+
+
+def test_large_time_gap_without_gap_values_has_no_longest_gap():
+    result = make_result("fresh")
+    result["data_issues"] = [{"issue": "large_time_gap"}]
+    issues = block(build_monitoring_context(result, 4000), "Data quality issues")
+    assert "Collector was not running" in issues
+    assert "longest gap" not in issues
+
+
+def test_other_issue_types_get_no_explanation():
+    result = make_result("stale")
+    issues = block(build_monitoring_context(result, 4000), "Data quality issues")
+    assert "- data: stale_data (1)" in issues.splitlines()

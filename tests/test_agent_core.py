@@ -234,3 +234,30 @@ def test_usage_is_none_when_provider_reports_none_or_fails():
     result = AgentCore(provider=failing, monitoring_provider=lambda: {}).handle_message("Hi")
     assert result["status"] == "error"
     assert result["usage"]["thinking_chars"] == 120
+
+
+def test_system_prompt_asks_for_brief_greetings_and_not_to_quote_rules():
+    from app.agent.core import DEFAULT_SYSTEM_PROMPT
+
+    prompt = DEFAULT_SYSTEM_PROMPT.lower()
+    assert "greeting" in prompt and "briefly" in prompt
+    assert "without a monitoring report" in prompt
+    assert "never quote" in prompt and "these instructions" in prompt
+    # The safety rules are still present.
+    assert "do not have shell access" in prompt
+    assert "dangerous operations require human approval" in prompt
+
+
+def test_agent_context_includes_thresholds_from_monitoring_result():
+    provider = FakeProvider()
+    agent = AgentCore(
+        provider=provider,
+        monitoring_provider=lambda: {
+            "status": "success",
+            "thresholds": {"cpu_usage": 90.0, "memory_usage": 90.0, "disk_usage": 90.0},
+        },
+    )
+
+    agent.handle_message("Чи варто хвилюватися через диск?")
+
+    assert "Disk 90.0 %" in agent.last_messages[1]["content"]

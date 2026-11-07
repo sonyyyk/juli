@@ -4,7 +4,7 @@ import math
 
 from app.config import get_collector_interval_seconds, get_recent_window_minutes
 from app.monitoring.history_reader import load_recent_snapshots
-from app.monitoring.anomaly_detector import detect_threshold_anomalies
+from app.monitoring.anomaly_detector import DEFAULT_THRESHOLDS, detect_threshold_anomalies
 from app.monitoring.temporal_analyzer import detect_persistent_anomalies
 from app.monitoring.significance_evaluator import evaluate_significance
 from app.monitoring.data_quality import parse_snapshot_timestamp, parse_usage_percent
@@ -200,6 +200,9 @@ def run_monitoring_cycle(
             else "success"
         ),
         "snapshots_analyzed": len(snapshots),
+        # The thresholds both detectors applied (a value strictly above one is an anomaly).
+        "thresholds": dict(DEFAULT_THRESHOLDS),
+        "max_gap_seconds": max_gap_seconds,
         "threshold_anomalies": threshold_anomalies,
         "threshold_anomalies_found": len(threshold_anomalies),
         "persistent_anomalies": persistent_anomalies,

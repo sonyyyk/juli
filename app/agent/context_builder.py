@@ -7,7 +7,7 @@ modify its input and does not read the database, the clock, or the network.
 Blocks, in output order:
 
 1. Data freshness (never trimmed)
-2. Latest stored values
+2. Latest stored values, followed by the anomaly thresholds
 3. Recent window: threshold anomalies and persistent series
 4. Significance evidence for recent anomalies
 5. PSI pressure, rendered once from ``pressure_observations``
@@ -17,7 +17,10 @@ Blocks, in output order:
 
 When the text exceeds ``max_chars``, the oldest items are removed from block
 7, then 6, then 4, then 3; after that PSI, the latest values, and finally the
-emptied blocks 7, 6, 4, 3 are each collapsed to a single short line. Missing or non-finite values are rendered as
+emptied blocks 7, 6, 4, 3 are each collapsed to a single short line; the
+thresholds line is collapsed last. If the text is still too long (only with
+pathological input at the smallest limits), the collapsed lines are dropped in
+the same order. Blocks 1 and 8 are never trimmed. Missing or non-finite values are rendered as
 ``unknown``, never as zero.
 """
 
@@ -51,6 +54,14 @@ UNKNOWN_STATE_WARNING = (
     "CURRENT SYSTEM STATE IS UNKNOWN; values below are the last stored "
     "measurements, not the present state."
 )
+TREND_UNKNOWN = "- Trends and forecasts (trend analysis is not available)."
+# Issue types that need an explanation so the model does not guess their meaning.
+ISSUE_EXPLANATIONS = {
+    "large_time_gap": (
+        "gap in data collection: no snapshot was stored for longer than the allowed interval, "
+        "i.e. the Collector was not running (or the machine was off); not a network problem"
+    ),
+}
 FUTURE_WARNING = (
     "WARNING: the newest snapshot is timestamped in the future; the clock is unreliable."
 )
@@ -78,6 +89,7 @@ def build_monitoring_context(result: object, max_chars: int | None = None) -> st
 
     freshness = _freshness_block(result)
     current = _current_block(result)
+    thresholds = _thresholds_block(result)
     recent_block = _recent_block(result, recent)
     significance = _significance_block(recent, assessments)
     psi = _psi_block(result)
@@ -85,10 +97,10 @@ def build_monitoring_context(result: object, max_chars: int | None = None) -> st
     historical = _historical_block(result)
     unknown = _unknown_block(result, assessments)
 
-    blocks = [freshness, current, recent_block, significance, psi, issues, historical, unknown]
+    blocks = [freshness, current, thresholds, recent_block, significance, psi, issues, historical, unknown]
     trim_order = [historical, issues, significance, recent_block]
-    _fit(blocks, max_chars, trim_order=trim_order, collapse_order=[psi, current, *trim_order])
-    return "\n\n".join(block.text() for block in blocks)
+    _fit(blocks, max_chars, trim_order=trim_order, collapse_order=[psi, current, *trim_order, thresholds])
+    return "\n\n".join(block.text() for block in blocks if not block.hidden)
 
 
 class _Block:
@@ -107,6 +119,7 @@ class _Block:
         self.empty_text = empty_text
         self.omitted = omitted
         self.collapsed = collapsed
+        self.hidden = False
         self._items_chars = sum(len(item) for item in self.items)
 
     def _tail(self) -> str | None:
@@ -118,6 +131,8 @@ class _Block:
         return None
 
     def length(self) -> int:
+        if self.hidden:
+            return 0
         parts = [len(self.header)] if self.header is not None else []
         parts.extend([0] * len(self.items))
         tail = self._tail()
@@ -154,19 +169,26 @@ def _fit(
     trim_order: list[_Block],
     collapse_order: list[_Block],
 ) -> None:
-    separators = 2 * (len(blocks) - 1)
-    total = sum(block.length() for block in blocks) + separators
+    total = _total(blocks)
     for block in trim_order:
         while total > max_chars and block.items:
-            before = block.length()
             block.pop_last()
-            total += block.length() - before
+            total = _total(blocks)
     for block in collapse_order:
         if total <= max_chars:
             break
-        before = block.length()
         block.collapse()
-        total += block.length() - before
+        total = _total(blocks)
+    for block in collapse_order:
+        if total <= max_chars:
+            break
+        block.hidden = True
+        total = _total(blocks)
+
+
+def _total(blocks: list[_Block]) -> int:
+    visible = [block for block in blocks if not block.hidden]
+    return sum(block.length() for block in visible) + 2 * max(len(visible) - 1, 0)
 
 
 # --- Blocks -----------------------------------------------------------------
@@ -231,6 +253,25 @@ def _current_block(result: object) -> _Block:
         )
         line = f"Latest stored values ({_ts(_get(current, 'timestamp'))}): {values}."
     return _Block(None, [line], empty_text=None, collapsed="Latest stored values omitted.")
+
+
+def _thresholds_block(result: object) -> _Block:
+    thresholds = _get(result, "thresholds")
+    if not _is_record(thresholds):
+        return _Block("Anomaly thresholds: not reported.", empty_text=None)
+    values = [
+        f"{label} {_with_unit(_get(thresholds, metric), '%')}"
+        for metric, label in CURRENT_METRICS
+        if _get(thresholds, metric) is not None
+    ]
+    if not values:
+        return _Block("Anomaly thresholds: not reported.", empty_text=None)
+    return _Block(
+        "Anomaly thresholds (a value above the threshold is a threshold anomaly, "
+        f"not an incident): {', '.join(values)}.",
+        empty_text=None,
+        collapsed="Anomaly thresholds omitted.",
+    )
 
 
 def _recent_block(result: object, recent: object) -> _Block:
@@ -418,8 +459,30 @@ def _issues_block(result: object) -> _Block:
         ("temporal_errors", "temporal"),
         ("pressure_issues", "PSI"),
     ):
-        items += [f"- {label}: {name} ({count})" for name, count in _issue_counts(_get(result, key))]
+        for name, count in _issue_counts(_get(result, key)):
+            line = f"- {label}: {name} ({count})"
+            if name in ISSUE_EXPLANATIONS:
+                line += f": {ISSUE_EXPLANATIONS[name]}"
+                longest = _longest_gap(_get(result, key), name)
+                if longest is not None:
+                    line += f"; longest gap {_duration(longest)}"
+            items.append(line)
     return _Block(header, items, collapsed="Data quality issues: {omitted} omitted.")
+
+
+def _longest_gap(issues: object, name: str) -> float | None:
+    gaps = []
+    for issue in _records(issues):
+        if _get(issue, "issue") != name:
+            continue
+        raw = _get(issue, "gap_seconds")
+        try:
+            gap = _num(float(raw)) if isinstance(raw, (str, int, float)) else None
+        except ValueError:
+            gap = None
+        if gap is not None and gap >= 0:
+            gaps.append(gap)
+    return max(gaps) if gaps else None
 
 
 def _historical_block(result: object) -> _Block:
@@ -484,6 +547,7 @@ def _unknown_block(result: object, assessments: list[object]) -> _Block:
     items += [
         "- Affected services and users (not collected).",
         "- Time link between PSI and the anomalies (not assessed).",
+        TREND_UNKNOWN,
         "- Causes of the anomalies (monitoring does not establish causality).",
     ]
     return _Block("Unknown or not established by monitoring:", items, empty_text=None)
