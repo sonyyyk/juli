@@ -272,3 +272,16 @@ def test_system_prompt_forbids_trend_claims_and_treats_thresholds_as_not_safe():
         assert word in prompt
     assert "threshold is not a safe limit" in prompt
     assert "say how close it is" in prompt
+
+
+def test_system_prompt_gives_the_name_without_any_expansion():
+    from app.agent.core import DEFAULT_SYSTEM_PROMPT
+
+    prompt = " ".join(DEFAULT_SYSTEM_PROMPT.split())
+    assert prompt.startswith("You are JULI, a local Linux diagnostic assistant.")
+    assert "Your name is simply JULI." in prompt
+    assert "Never expand it" in prompt and "invent what the letters stand for" in prompt
+    assert "When asked your name or who you are, answer that you are JULI." in prompt
+    # The model repeated an expansion that the prompt itself used to contain.
+    assert "Just Understanding" not in prompt
+    assert "(" not in prompt.split(".")[0]
