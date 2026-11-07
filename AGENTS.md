@@ -53,38 +53,43 @@ Candidate scientific contributions:
 
 ## Implementation status
 
-The latest repository audit reported the following status. This is a snapshot, not a guarantee about the current checkout; inspect the code before relying on it. Never assume an architectural specification means a component is implemented. Test status must be verified by running the tests when appropriate.
+Snapshot after Stage 0 Tasks 1–6 (updated 2026-11-07, on top of commit `32c9adb`). This is a snapshot, not a guarantee about the current checkout; inspect the code before relying on it. Never assume an architectural specification means a component is implemented. Test status must be verified by running the tests when appropriate.
 
-Implemented at the time of that audit:
+Implemented:
 
-- Read-only system and process tools.
-- Seven-tool registry.
-- SQLite snapshot collector.
-- Streamlit dashboard.
-- Observation model.
-- History reader.
-- Threshold anomaly detection.
-- Temporal analysis.
-- Monitoring analysis service.
-- PSI parsing.
+- Read-only tools with a unified result (`make_tool_result`; `success` / `partial` / `error`, `data=None` on error): CPU, memory, disk, aggregated system state (`partial` when one part fails), Linux PSI, process list, process info.
+- Tool registry with 7 read-only tools.
+- SQLite snapshot Collector; a failed cycle is logged and skipped, snapshots are written only on full success.
+- Central configuration (`app/config.py`, `app/llm/config.py`) through `JULI_*` environment variables.
+- Schema versioning: `ensure_schema()` with `PRAGMA user_version`, migration 1 = `system_snapshots`.
+- CLI entry point `main.py`: `init-db`, `collect [--interval N]`, `analyze`, `analyze --context`, `chat`.
+- Observation model and history reader.
+- Threshold anomaly detection and temporal analysis (persistent series).
+- PSI parsing and PSI observations in the monitoring cycle.
+- Deterministic significance evaluation (evidence profiles, no severity assignment).
+- Monitoring analysis service with data-quality issues, freshness (`fresh` / `stale` / `no_data`) and current / recent / historical sections.
+- Context Builder: compact monitoring context for the LLM with a character limit.
+- Agent Core with a local Ollama provider (`qwen3.5:4b` by default, explicit `think`, `num_ctx`, `temperature`, `seed`, token usage).
+- Streamlit dashboard with snapshot charts and a chat panel.
 - Dataset collection, sanitization, and validation utilities.
+- Dependencies pinned in `requirements.txt` / `requirements-dev.txt`; README.
 
-Partially implemented at the time of that audit:
+Partially implemented:
 
-- Tool execution consistency.
-- Monitoring integration.
-- Collector operational entry point.
-- Test coverage.
+- Tool Layer: tools exist for 2 of the 7 categories (System, Processes). Services (empty package), Network, Containers, Filesystem, and Logs have no tools. Read and Action Tools are separated only because no Action Tools exist yet.
+- Monitoring: threshold and temporal analysis plus PSI. Baseline-based detection, the USE Method, and the Four Golden Signals are not implemented. PSI is read live and not stored in snapshots.
+- Agent Core orchestration: conversation over the monitoring context only. The LLM cannot call tools; there is no Diagnostic Planner.
+- Collector operation: manual start from the terminal; no systemd service.
 
-Not implemented at the time of that audit:
+Not implemented:
 
-- Incident Management.
-- Agent Core orchestration.
-- Contextual and Long-term Memory.
-- Full application entry point.
-- Complete project documentation.
+- Incident Management (Significance Evaluation → Incident).
+- Contextual and Long-term Memory (`app/memory/` is empty).
+- Outcome, Evaluation, and Knowledge Extraction.
+- Action Tools and the Risk Analyzer (human approval for HIGH / CRITICAL operations).
+- Diagnostic Planner.
 
-There were 26 declared test cases at that audit; their current passing status was not established.
+Tests: `.venv/bin/python -m pytest -q` → 347 passed, 47 subtests passed (17 test files, run on 2026-11-07).
 
 ## Development rules
 

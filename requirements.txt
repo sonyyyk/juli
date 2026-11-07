@@ -1,1 +1,4 @@
+# Runtime dependencies (Python >= 3.10). Versions pinned from the project .venv.
 psutil==7.2.2
+streamlit==1.65.0
+pandas==3.0.6

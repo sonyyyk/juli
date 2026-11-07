@@ -9,3 +9,5 @@ data/*.db
 data/*.db.backup-*
 data/raw/
 CLAUDE.md
+*.bak
+/output/
