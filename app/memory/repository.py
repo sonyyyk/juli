@@ -674,6 +674,64 @@ class MemoryRepository:
             sql += " WHERE " + " AND ".join(conditions)
         return self._query(MemoryEvent, sql, tuple(params))
 
+    def list_incident_events(self, incident_id: str) -> list[MemoryEvent]:
+        """The incident's journal together with the events of every record linked to it.
+
+        Linked records: its observations, hypotheses, diagnostic actions,
+        evidence, the tool results of its actions, and the relations touching
+        any of these. Events come in chronological order (time, then write order).
+        """
+        with self._read() as connection:
+            incident = self._load(connection, "incident", incident_id)
+            ids = {incident.id}
+            for table in ("observations", "hypotheses", "diagnostic_actions", "evidence"):
+                ids.update(row[0] for row in connection.execute(
+                    f"SELECT id FROM {table} WHERE incident_id = ?", (incident.id,)))
+            ids.update(row[0] for row in connection.execute(
+                "SELECT tool_result_id FROM diagnostic_actions "
+                "WHERE incident_id = ? AND tool_result_id IS NOT NULL", (incident.id,)))
+            relations = connection.execute(
+                "SELECT id, src_id, dst_id FROM memory_relations").fetchall()
+            ids.update(row["id"] for row in relations
+                       if row["src_id"] in ids or row["dst_id"] in ids)
+            rows = connection.execute(
+                "SELECT rowid AS position, * FROM memory_events ORDER BY rowid").fetchall()
+        events = [
+            (parse_utc(row["at"]), row["position"], MemoryEvent.from_row(row))
+            for row in rows if row["entity_id"] in ids
+        ]
+        events.sort(key=lambda item: (item[0], item[1]))
+        return [event for _, _, event in events]
+
+    def resolve_incident_id(self, reference: str, min_prefix: int = 8) -> str:
+        """Return the full incident id for a full id or a unique prefix.
+
+        The prefix is the hex part after ``inc_`` (``inc_`` itself is optional)
+        and needs at least ``min_prefix`` characters. An ambiguous prefix
+        raises ``ValueError`` listing the matches.
+        """
+        if not isinstance(reference, str) or not reference.strip():
+            raise ValueError("an incident id or prefix is required")
+        reference = reference.strip()
+        prefix = reference if reference.startswith("inc_") else "inc_" + reference
+        if len(prefix) - len("inc_") < min_prefix:
+            raise ValueError(
+                f"incident id prefix {reference!r} is too short; use at least {min_prefix} "
+                "characters after 'inc_'"
+            )
+        with self._read() as connection:
+            matches = [row[0] for row in connection.execute(
+                "SELECT id FROM incidents WHERE substr(id, 1, ?) = ? ORDER BY rowid",
+                (len(prefix), prefix),
+            )]
+        if not matches:
+            raise NotFound(f"no incident matches {reference!r}")
+        if len(matches) > 1:
+            raise ValueError(
+                f"incident id prefix {reference!r} is ambiguous; it matches: " + ", ".join(matches)
+            )
+        return matches[0]
+
     # --- internals ----------------------------------------------------------------
 
     @contextmanager

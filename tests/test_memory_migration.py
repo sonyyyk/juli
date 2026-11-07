@@ -243,11 +243,15 @@ def test_copy_of_the_real_database_migrates_and_the_original_is_untouched(tmp_pa
     shutil.copyfile(REAL_DB, copy)
     monkeypatch.setenv("JULI_DB_PATH", str(copy))
 
-    assert database.ensure_schema() == 2
+    latest = database.MIGRATIONS[-1][0]
+    assert database.ensure_schema() == latest
 
     assert raw(copy, "SELECT * FROM system_snapshots ORDER BY id") == snapshots
     assert MEMORY_TABLES <= tables(copy)
-    assert [b.name.rsplit("-", 1)[-1] for b in backups(copy)] == [f"v{source_version}"]
+    # A backup is made only when there was something to migrate (the real
+    # database was migrated to v2 on 2026-11-07, so today there is none).
+    expected_backups = [f"v{source_version}"] if source_version < latest else []
+    assert [b.name.rsplit("-", 1)[-1] for b in backups(copy)] == expected_backups
     assert sha256(REAL_DB) == digest_before
 
 

@@ -14,6 +14,8 @@ from app.core.collector import run_collector
 from app.core.database import ensure_schema, get_schema_version
 from app.llm.config import OllamaConfig
 from app.llm.ollama import OllamaProvider
+from app.memory.errors import MemoryModelError
+from app.memory.incident_cli import add_incident_parser
 from app.monitoring.analysis_service import run_monitoring_cycle
 
 CHAT_HELP = "Commands: /context - last context sent to the model, /clear - forget the conversation, /exit - quit."
@@ -34,7 +36,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         return args.handler(args)
-    except (RuntimeError, ValueError, OSError, sqlite3.Error) as exc:
+    except (RuntimeError, ValueError, OSError, sqlite3.Error, MemoryModelError) as exc:
         print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
 
@@ -75,6 +77,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "chat", help="chat with JULI in the terminal (local Ollama model)"
     )
     chat.set_defaults(handler=_chat)
+
+    add_incident_parser(subparsers)
 
     return parser
 

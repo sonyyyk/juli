@@ -20,8 +20,8 @@ LLM-Based Agents: Retrieval, Reconstruction, and Long-Term Reasoning.”*
 
 Stage 0 (technical stabilization, see `docs/STAGE_0_STABILIZATION.md`) is
 closed. The memory layer, the main research subject, is specified in
-`docs/MEMORY_DATA_MODEL_v1.md` and is at step **M1 of M7**: storage and rules
-exist, but nothing in JULI writes to memory yet.
+`docs/MEMORY_DATA_MODEL_v1.md` and is at step **M2 of M7**: storage, rules and
+incident commands exist; diagnostics and chat do not write to memory yet.
 
 ### Implemented
 
@@ -63,15 +63,18 @@ exist, but nothing in JULI writes to memory yet.
   models and a repository (`app/memory/`) that rejects forbidden status changes
   (the LLM may only propose) and journals every change in `memory_events`.
   Migrating an existing database first makes a backup
-  (`<db>.backup-YYYYMMDD-v<old version>`). No incident commands, no automatic
-  status rules, no retrieval and no chat integration yet (M2–M7).
+  (`<db>.backup-YYYYMMDD-v<old version>`).
+- **Incidents (step M2)**: `main.py incident open / start / list / show / close /
+  reopen`. A person opens and closes incidents; every status change is journaled
+  with `actor = user`. Observations, hypotheses, checks, automatic status rules,
+  retrieval and chat integration come in M3–M7.
 
 ### Not implemented
 
 - Incident management (anomaly → incident transition).
-- Use of memory by JULI: incident lifecycle commands, persisting real tool
-  runs, hypothesis status rules, Incident Chat, consolidation into knowledge and
-  retrieval (memory steps M2–M7).
+- Use of memory by JULI's diagnostics: persisting real tool runs, hypothesis
+  status rules, Incident Chat, consolidation into knowledge and retrieval
+  (memory steps M3–M7).
 - Outcome evaluation and knowledge extraction.
 - Action tools and the Risk Analyzer (human approval of HIGH / CRITICAL actions).
 - Diagnostic planner.
@@ -126,6 +129,24 @@ Run from the repository root:
 
 In `chat`: `/context` shows the last context sent to the model, `/clear`
 forgets the conversation, `/exit` quits.
+
+### Incidents
+
+```bash
+.venv/bin/python main.py incident open "Disk almost full" --symptom "The disk is almost full"
+.venv/bin/python main.py incident start <id>          # open -> investigating
+.venv/bin/python main.py incident list [--status open|investigating|resolved|unresolved]
+.venv/bin/python main.py incident show <id>           # incident, observations, hypotheses, events
+.venv/bin/python main.py incident close <id> --resolved --summary "Old journal logs removed"
+.venv/bin/python main.py incident close <id> --unresolved --summary "Cause not found"
+.venv/bin/python main.py incident reopen <id> --reason "The disk filled up again"
+```
+
+`<id>` is the full id or a unique prefix of at least 8 characters after
+`inc_` (for example `inc_48cfb117` or `48cfb117`). Allowed transitions:
+`open -> investigating -> resolved | unresolved`, and `reopen` from `resolved`
+or `unresolved` back to `investigating`. `open` stores the host context
+(hostname, OS, kernel, architecture, Python, JULI and schema versions).
 
 Monitoring data is **fresh** only if the newest snapshot is younger than
 3 × the collector interval (30 s by default). Otherwise `analyze` reports
