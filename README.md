@@ -18,9 +18,10 @@ LLM-Based Agents: Retrieval, Reconstruction, and Long-Term Reasoning.”*
 
 ## Status
 
-Stage 0 (technical stabilization, see `docs/STAGE_0_STABILIZATION.md`) is done
-through Task 6. The memory layer, which is the main research subject, is **not
-implemented yet**.
+Stage 0 (technical stabilization, see `docs/STAGE_0_STABILIZATION.md`) is
+closed. The memory layer, the main research subject, is specified in
+`docs/MEMORY_DATA_MODEL_v1.md` and is at step **M1 of M7**: storage and rules
+exist, but nothing in JULI writes to memory yet.
 
 ### Implemented
 
@@ -58,13 +59,19 @@ implemented yet**.
   cannot run tools, and there is no diagnostic planner.
 - **Collector operation**: started manually from the terminal; there is no
   systemd service.
+- **Memory (step M1)**: schema version 2 with the nine memory tables, dataclass
+  models and a repository (`app/memory/`) that rejects forbidden status changes
+  (the LLM may only propose) and journals every change in `memory_events`.
+  Migrating an existing database first makes a backup
+  (`<db>.backup-YYYYMMDD-v<old version>`). No incident commands, no automatic
+  status rules, no retrieval and no chat integration yet (M2–M7).
 
 ### Not implemented
 
 - Incident management (anomaly → incident transition).
-- Contextual and long-term memory (`app/memory/` is empty). The planned
-  memory model (Incident, Observation, Hypothesis, DiagnosticAction, Evidence,
-  Knowledge, MemoryRelation) is designed but has no code.
+- Use of memory by JULI: incident lifecycle commands, persisting real tool
+  runs, hypothesis status rules, Incident Chat, consolidation into knowledge and
+  retrieval (memory steps M2–M7).
 - Outcome evaluation and knowledge extraction.
 - Action tools and the Risk Analyzer (human approval of HIGH / CRITICAL actions).
 - Diagnostic planner.
@@ -180,7 +187,7 @@ app/models/             Observation model
 app/monitoring/         history reader, anomaly, temporal, PSI, significance, analysis service
 app/agent/              Agent Core and Context Builder
 app/llm/                LLM interface and the Ollama provider
-app/memory/             reserved for the memory model (empty)
+app/memory/             memory data model v1: models, transitions, repository (M1)
 app/dashboard.py        Streamlit dashboard
 dataset_collection/     standalone dataset collection / sanitization / validation scripts
 tests/                  pytest suite

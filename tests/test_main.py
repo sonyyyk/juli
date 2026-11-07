@@ -19,11 +19,12 @@ def test_init_db_creates_schema_and_prints_version(db_path, capsys):
 
     out = capsys.readouterr().out
     assert str(db_path) in out
-    assert "Schema version: 0 -> 1" in out
-    assert database.get_schema_version() == 1
+    latest = database.MIGRATIONS[-1][0]
+    assert f"Schema version: 0 -> {latest}" in out
+    assert database.get_schema_version() == latest
 
     assert main.main(["init-db"]) == 0
-    assert "Schema version: 1 -> 1" in capsys.readouterr().out
+    assert f"Schema version: {latest} -> {latest}" in capsys.readouterr().out
 
 
 def test_collect_passes_interval_to_collector(db_path):
@@ -31,7 +32,7 @@ def test_collect_passes_interval_to_collector(db_path):
         assert main.main(["collect", "--interval", "3"]) == 0
 
     run_collector.assert_called_once_with(3)
-    assert database.get_schema_version() == 1
+    assert database.get_schema_version() == database.MIGRATIONS[-1][0]
 
 
 def test_collect_uses_configured_default_interval(db_path, monkeypatch):

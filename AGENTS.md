@@ -53,7 +53,7 @@ Candidate scientific contributions:
 
 ## Implementation status
 
-Snapshot after Stage 0 Tasks 1–6 (updated 2026-11-07, on top of commit `32c9adb`). This is a snapshot, not a guarantee about the current checkout; inspect the code before relying on it. Never assume an architectural specification means a component is implemented. Test status must be verified by running the tests when appropriate.
+Snapshot after Stage 0 and memory step M1 (updated 2026-11-07, on top of commit `208006d`). This is a snapshot, not a guarantee about the current checkout; inspect the code before relying on it. Never assume an architectural specification means a component is implemented. Test status must be verified by running the tests when appropriate.
 
 Implemented:
 
@@ -80,16 +80,17 @@ Partially implemented:
 - Monitoring: threshold and temporal analysis plus PSI. Baseline-based detection, the USE Method, and the Four Golden Signals are not implemented. PSI is read live and not stored in snapshots.
 - Agent Core orchestration: conversation over the monitoring context only. The LLM cannot call tools; there is no Diagnostic Planner.
 - Collector operation: manual start from the terminal; no systemd service.
+- Memory (`docs/MEMORY_DATA_MODEL_v1.md`, step M1 of M7): schema version 2 (nine tables, automatic pre-migration backup), dataclass models, and a repository that enforces invariants 1–7 as guards (allowed transitions, actor rights, evidence conditions) and journals every change in `memory_events`. Nothing in JULI writes to memory yet.
 
 Not implemented:
 
 - Incident Management (Significance Evaluation → Incident).
-- Contextual and Long-term Memory (`app/memory/` is empty).
+- Memory steps M2–M7: incident lifecycle CLI, persisting real tool runs, hypothesis status rules, Incident Chat (D6), Evaluation and Consolidation, retrieval.
 - Outcome, Evaluation, and Knowledge Extraction.
 - Action Tools and the Risk Analyzer (human approval for HIGH / CRITICAL operations).
 - Diagnostic Planner.
 
-Tests: `.venv/bin/python -m pytest -q` → 347 passed, 47 subtests passed (17 test files, run on 2026-11-07).
+Tests: `.venv/bin/python -m pytest -q` → 504 passed, 47 subtests passed (22 test files, run on 2026-11-07).
 
 ## Development rules
 

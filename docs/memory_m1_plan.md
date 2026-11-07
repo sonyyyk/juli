@@ -1,6 +1,6 @@
 # Memory M1 — план: схема v2, моделі, repository, інваріанти
 
-*Стан: **погоджено 07.11.2026**, реалізація M1 почата. Остаточні рішення C1–C14 — у розділі 9 специфікації; там, де вони відрізняються від рекомендацій нижче, діє специфікація.*
+*Стан: **реалізовано і погоджено** (07.11.2026); повний звіт — `docs/memory_m1_report.md` (розділ 10 нижче — короткий, без C15 і з проміжною кількістю тестів 484). Остаточні рішення C1–C14 — у розділі 9 специфікації; там, де вони відрізняються від рекомендацій нижче, діє специфікація.*
 
 Специфікація: `docs/MEMORY_DATA_MODEL_v1.md`, скопійована з `~/Downloads/MEMORY_DATA_MODEL_v1.md` без змін (`cmp` — ідентичні; sha256 `be74a951…dc12a4`). Розділи 0–8 на місці. Заголовок файлу досі каже «чернетка для погодження» / «запропоновано, не реалізовано». Я його не правила, бо копія мала бути без змін.
 
@@ -150,3 +150,52 @@
   - C12 — кирилиця перевіряється лише в `statement` (без `evidence.summary`);
   - C13 — payload понад 64 KiB **обрізається** (як у розд. 2.5), з явною позначкою `truncated`, а не відхиляється.
 - Специфікація: заголовок «v1.0, погоджено 07.11.2026», нове рішення D6 (General Chat / Incident Chat, M5), розділ 9.
+
+## 10. Звіт про реалізацію (07.11.2026)
+
+### Файли
+
+| Файл | Що |
+|---|---|
+| `app/core/database.py` | міграція 2 (`MEMORY_SCHEMA_V2`: 9 таблиць, CHECK-переліки, `json_valid`, FK, індекси); `PRAGMA foreign_keys = ON` у `get_connection()` (C6); `backup_database()` + `_verify_backup()` перед міграцією наявної бази (C5) |
+| `app/memory/models.py` | переліки й 9 frozen dataclasses (`IncidentObservation` — C2), валідація полів, кирилиця в `statement` відхиляється (C12) |
+| `app/memory/ids.py` | `inc_`, `obs_`, `hyp_`, `act_`, `tr_`, `ev_`, `rel_`, `kn_`, `evt_` + uuid4 |
+| `app/memory/transitions.py` | таблиці переходів і прав акторів (C8, розд. 9 специфікації) |
+| `app/memory/repository.py` | `MemoryRepository`: створення, читання, зміна статусів; інваріанти 1–7, C9–C11, C13, C14; кожна зміна разом із подією в одній транзакції |
+| `app/memory/errors.py` | `NotFound`, `InvalidTransition`, `ActorNotAllowed`, `InvariantViolation` |
+| `tests/conftest.py` | фікстури `memory_db`, `repo`, годинник із кроком 1 с, допоміжні сценарії |
+| `tests/test_memory_{migration,models,repository,invariants}.py` | нові тести |
+| `tests/test_database.py`, `test_main.py`, `test_collector.py` | очікувана версія `1` → остання з `MIGRATIONS`; «імітовану» міграцію перенесено на `LATEST + 1` |
+| `README.md`, `AGENTS.md` | статус: Memory — partial (M1) |
+
+`app/agent/*`, `app/llm/*`, `main.py`, `app/dashboard.py`, моніторинг — не змінювались.
+
+### Тести
+
+`.venv/bin/python -m pytest -q` → **484 passed, 47 subtests passed** (було 371; +113). `git diff --check` — без зауважень. Інваріанти: кожен з 1–7 має позитивні й негативні тести (`test_memory_invariants.py`, префікси `test_1_…` – `test_7_…`, плюс `test_c11_…`, `test_c14_…`).
+
+### Перевірка на копії реальної бази
+
+- Тест `test_copy_of_the_real_database_migrates_and_the_original_is_untouched`: копія в `tmp_path`, міграція, snapshots ідентичні, sha256 оригіналу до і після однаковий.
+- Вручну: копія в scratchpad, `main.py init-db` → `Schema version: 1 -> 2`; створено `juli.db.backup-20261107-v1` (версія 1, 1393 snapshots); повторний `init-db` → `2 -> 2`, нової копії немає; `main.py analyze` працює на v2.
+- Реальна `data/juli.db`: sha256 збігається з виміряним до початку M1, `user_version = 1`, нових файлів у `data/` немає.
+
+### Рішення під час реалізації (не описані явно в специфікації)
+
+1. **Резервна копія робиться до блокування на запис.** SQLite backup API зависає, якщо джерело — з'єднання з власною відкритою транзакцією запису (перевірено: зависання > 10 с). Тому копія знімається перед `BEGIN IMMEDIATE`; версія перечитується вже під блокуванням.
+2. **Хто записує tool_results:** лише `rule` (Tool Layer). LLM і користувач не можуть «надати» вивід інструмента — інакше доказ можна підробити.
+3. **Дія:** `planned → running` лише з `approval` `not_required` / `approved`; `succeeded` вимагає прив'язаного tool_result того самого інструмента; один tool_result належить лише одній дії. `tool_name` перевіряється в Tool Registry: `read_check` — тільки read-інструмент, `action` — тільки не-read (у v1 таких немає).
+4. **Повторне відкриття інциденту** очищає `closed_at` і `root_cause_hypothesis_id`, `resolution_summary` лишається. Гіпотеза-причина не може вийти з `supported`, поки інцидент не відкрито повторно (наслідок C14).
+5. **Корінь причини** — лише при переході в `resolved`.
+6. **Зміна approval у журналі** пишеться як `status_changed` зі значеннями `approval:<старе>` → `approval:<нове>`, щоб відрізнити від `status`.
+7. **Evidence з `source_type = user`** не має `source_ref`; observation з `snapshot` / `tool_result` мусить мати `source_ref`, що існує.
+
+### Помилка, знайдена під час тестів
+
+Тест відкату журналу спершу викликав `monkeypatch.undo()`, який скасував і тимчасовий `JULI_DB_PATH`, тож наступне читання пішло на **реальну** `data/juli.db`. Запису не було: repository відмовив на перевірці версії (`schema version 2, found 1`) до будь-якої зміни; sha256 і `user_version` реальної бази перевірено — без змін. Тест виправлено (`monkeypatch.context()`).
+
+### Обмеження
+
+- Інваріанти 3–5 — **запобіжники**, а не правила: ніщо в M1 само не змінює статус (це M4).
+- Payload-ліміт 64 KiB і обрізання — тимчасово; санітизація — M3.
+- Після злиття **перший запуск** `collect` / `analyze` / `chat` / dashboard мігрує реальну `data/juli.db` до v2 (з автоматичною копією `data/juli.db.backup-YYYYMMDD-v1`).

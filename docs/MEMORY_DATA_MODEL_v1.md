@@ -8,7 +8,7 @@
 2. **Пам'ять пропонує, Tool Layer перевіряє.** Знання з Long-Term Memory потрапляє в новий інцидент лише як *гіпотеза* (`origin = memory`), яку треба заново перевірити інструментами на поточній системі. Це і є «reconstruction» у JULI.
 3. **Статус ставить код, а не LLM.** LLM може запропонувати гіпотезу чи зв'язок, але `verified` / `refuted` встановлюється детермінованими правилами за доказами або підтвердженням користувача. (Обґрунтування — Етап 0: модель 4B ненадійно виконує правила промпту.)
 4. **Кожне твердження має походження.** Хто створив (rule / llm / user / memory), на якому доказі ґрунтується.
-5. **Схожість ≠ причинність.** Зв'язки поділено на три класи: associative, semantic, causal. Associative ніколи не є доказом.
+5. **Схожість ≠ причинність.** Зв'язки поділено на чотири класи: associative, semantic, evidential, causal. Associative ніколи не є доказом; що доказ підтримує чи спростовує — це evidential (розд. 9, C15).
 6. **Історія не губиться.** Кожна зміна статусу пишеться в журнал подій.
 
 ## 1. Погоджені рішення (змінити, якщо не так)
@@ -121,7 +121,7 @@
 | id | TEXT PK | |
 | src_type, src_id | TEXT | напр. `evidence`, `ev_…` |
 | relation | TEXT | `supports`, `contradicts`, `causes`, `verified_by`, `resolved_by`, `depends_on`, `derived_from`, `similar_to` |
-| relation_class | TEXT | `associative` / `semantic` / `causal` |
+| relation_class | TEXT | `associative` / `semantic` / `evidential` / `causal` (`supports`, `contradicts` — завжди `evidential`, C15) |
 | dst_type, dst_id | TEXT | |
 | status | TEXT | `asserted` / `verified` / `refuted` |
 | basis_evidence_id | TEXT FK nullable | на якому доказі ґрунтується |
@@ -156,7 +156,7 @@
 3. LLM не може встановити `verified` / `supported` / `refuted` напряму — лише запропонувати; статус ставить правило або користувач.
 4. Гіпотеза `supported` має ≥ 1 зв'язок `supports` від evidence з `source_type = tool_result` (або підтвердження користувача) і жодного неспростованого `contradicts`.
 5. Гіпотеза з `origin = memory` не може стати `supported` без нової перевірки в поточному інциденті.
-6. Knowledge `failed` ніколи не повертається retrieval як рекомендоване рішення — лише як попередження «це вже не спрацювало».
+6. Knowledge `failed` ніколи не повертається retrieval як рекомендоване рішення — лише як попередження «це вже не спрацювало». Knowledge `deprecated` retrieval не повертає взагалі — ні як рекомендацію, ні як попередження (розд. 9, C4).
 7. Кожна зміна статусу → запис у `memory_events`.
 
 ## 4. Життєвий цикл
@@ -204,7 +204,7 @@ M1–M4 і M6 детерміновані й повністю тестуютьс�
 |---|---|---|
 | Section 4. Proposed Memory Model | Принципи (розд. 0), дворівнева модель, «пам'ять пропонує — Tool Layer перевіряє» | proposed design |
 | Section 5. Memory Organization | Сутності (розд. 2), життєвий цикл і консолідація (розд. 4) | proposed design |
-| Section 6. Causal and Semantic Relations | `memory_relations`, три класи зв'язків, інваріанти 1–5 | proposed design |
+| Section 6. Causal and Semantic Relations | `memory_relations`, чотири класи зв'язків, інваріанти 1–5 | proposed design |
 | Section 7. Preliminary Evaluation Plan | 4 режими (No Memory / Conversation History / Similarity Retrieval / Evidence-Guided), сценарії «схожі симптоми — різні причини» | план, без результатів |
 | Section 8. Discussion | Обмеження 4B-моделі з Етапу 0 як аргумент, чому статуси ставить код | спостереження, не експеримент |
 
@@ -225,7 +225,7 @@ M1–M4 і M6 детерміновані й повністю тестуютьс�
 | C1 | `tool_results` має ще колонку `error` (JSON, nullable) — поле `error` з `ToolResult` (`code`, `message`, `details`). `payload` = `ToolResult.data`. |
 | C2 | Таблиця `observations` — як у розд. 2.2. Dataclass називається `IncidentObservation` (`app/memory/models.py`), щоб не плутати з `app/models/observation.Observation` (D2). |
 | C3 | Інваріанти 3–5 у M1 — **запобіжники**: repository відхиляє недозволений перехід. У M4 — **правила**, що самі вирішують, коли змінити статус. |
-| C4 | Інваріант 6 у M1 — два методи читання: рекомендоване знання (усі статуси, крім `failed`) і попередження (лише `failed`). Retrieval у M7 мусить користуватися ними. |
+| C4 | Інваріант 6 у M1 — два методи читання: рекомендоване знання (`verified`, `unverified`) і попередження (лише `failed`). **`deprecated` retrieval пропускає повністю**: його замінило новіше знання (`superseded_by`), тож воно не повертається ні як рекомендація, ні як попередження (рішення 07.11.2026). Retrieval у M7 мусить користуватися цими методами. |
 | C5 | Перед міграцією наявної бази (у ній вже є таблиці) `ensure_schema()` автоматично робить резервну копію `<db>.backup-YYYYMMDD-v<стара версія>`. Наявну копію не перезаписує. **Якщо копія не вдалась, міграція не виконується.** Порожня нова база мігрує без копії. |
 | C6 | `PRAGMA foreign_keys = ON` на кожному з'єднанні (`get_connection()`). |
 | C7 | `actor` у журналі — лише `rule` / `llm` / `user`. Гіпотезу з `origin = memory` створює `rule` (детермінований retrieval). Інцидент з `opened_by = juli_suggested` відкриває `user` (D1). |
@@ -236,6 +236,7 @@ M1–M4 і M6 детерміновані й повністю тестуютьс�
 | C12 | `statement` (observations, hypotheses, knowledge) — англійською. Мінімальний запобіжник у коді: кирилиця в `statement` відхиляється. Інші текстові поля (`symptom_text`, `summary`, `reason`) — без обмеження мови. |
 | C13 | `payload` понад ліміт (M1: 64 KiB серіалізованого JSON) обрізається: зберігається `{"truncated": true, "original_size_bytes": N, "preview": "<початок JSON-тексту>"}`. Санітизація — у M3 (відкрите питання 8.2). |
 | C14 | `root_cause_hypothesis_id` — лише гіпотеза **цього** інциденту зі статусом `supported`. |
+| C15 | *(додано й погоджено 07.11.2026, до коміту M1)* Четвертий клас зв'язків **`evidential`**: `relation_class` ∈ `associative` / `semantic` / `evidential` / `causal`. Зв'язки `supports` і `contradicts` — **завжди** `evidential` (перевіряється кодом і `CHECK` у схемі). Отже, семантичний чи асоціативний зв'язок не може підтвердити або спростувати гіпотезу (інв. 2, 4). Для інших зв'язків клас не обмежено, крім `similar_to` → `associative` (інв. 2). |
 
 Також у M1:
 

@@ -322,7 +322,7 @@ def test_collect_snapshot_works_on_empty_directory_without_manual_init(
     collector.collect_system_snapshot()
 
     assert len(read_snapshots()) == 1
-    assert database.get_schema_version() == 1
+    assert database.get_schema_version() == database.MIGRATIONS[-1][0]
 
 
 def test_failed_measurement_does_not_create_database(tmp_path, monkeypatch):
