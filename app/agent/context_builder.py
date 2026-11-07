@@ -256,22 +256,49 @@ def _current_block(result: object) -> _Block:
 
 
 def _thresholds_block(result: object) -> _Block:
+    """Thresholds plus the distance of each latest stored value to its threshold."""
     thresholds = _get(result, "thresholds")
-    if not _is_record(thresholds):
-        return _Block("Anomaly thresholds: not reported.", empty_text=None)
+    limits = {
+        metric: _num(_get(thresholds, metric)) if _is_record(thresholds) else None
+        for metric, _ in CURRENT_METRICS
+    }
     values = [
-        f"{label} {_with_unit(_get(thresholds, metric), '%')}"
+        f"{label} {_with_unit(limits[metric], '%')}"
         for metric, label in CURRENT_METRICS
-        if _get(thresholds, metric) is not None
+        if limits[metric] is not None
     ]
     if not values:
         return _Block("Anomaly thresholds: not reported.", empty_text=None)
+
+    current = _get(result, "current")
+    items = []
+    for metric, label in CURRENT_METRICS:
+        value = _num(_get(current, metric)) if _is_record(current) else None
+        if value is None or limits[metric] is None:
+            continue
+        items.append(f"- {_threshold_distance(label, value, limits[metric])}")
     return _Block(
         "Anomaly thresholds (a value above the threshold is a threshold anomaly, "
-        f"not an incident): {', '.join(values)}.",
+        f"not an incident; a threshold is not a safe limit): {', '.join(values)}."
+        + ("\nDistance of the latest stored values to the thresholds (pp = percentage points):"
+           if items else ""),
+        items,
         empty_text=None,
         collapsed="Anomaly thresholds omitted.",
     )
+
+
+def _threshold_distance(label: str, value: float, threshold: float) -> str:
+    # The direction follows the raw values, exactly as the detector compares them
+    # (an anomaly is value > threshold); only the shown numbers are rounded.
+    prefix = f"{label} {_fmt(value)} %"
+    limit = f"threshold {_fmt(threshold)} %"
+    if value == threshold:
+        return f"{prefix}, at {limit} (not above it)"
+    gap = abs(value - threshold)
+    gap_text = "<0.1" if round(gap, 1) == 0 else _fmt(gap)
+    side = "above" if value > threshold else "below"
+    return f"{prefix}, {gap_text} pp {side} {limit}"
 
 
 def _recent_block(result: object, recent: object) -> _Block:

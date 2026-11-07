@@ -403,9 +403,10 @@ def test_context_is_several_times_shorter_than_json_on_realistic_result():
 
 THRESHOLDS = {"cpu_usage": 90.0, "memory_usage": 90.0, "disk_usage": 90.0}
 THRESHOLDS_LINE = (
-    "Anomaly thresholds (a value above the threshold is a threshold anomaly, not an incident): "
-    "CPU 90.0 %, RAM 90.0 %, Disk 90.0 %."
+    "Anomaly thresholds (a value above the threshold is a threshold anomaly, not an incident; "
+    "a threshold is not a safe limit): CPU 90.0 %, RAM 90.0 %, Disk 90.0 %."
 )
+DISTANCE_HEADER = "Distance of the latest stored values to the thresholds (pp = percentage points):"
 
 
 def test_thresholds_are_stated_explicitly_after_latest_values():
@@ -413,7 +414,13 @@ def test_thresholds_are_stated_explicitly_after_latest_values():
     result["thresholds"] = dict(THRESHOLDS)
     blocks = build_monitoring_context(result, 4000).split("\n\n")
     assert blocks[1].startswith("Latest stored values")
-    assert blocks[2] == THRESHOLDS_LINE
+    assert blocks[2].splitlines() == [
+        THRESHOLDS_LINE,
+        DISTANCE_HEADER,
+        "- CPU 12.3 %, 77.7 pp below threshold 90.0 %",
+        "- RAM 45.0 %, 45.0 pp below threshold 90.0 %",
+        "- Disk 60.1 %, 29.9 pp below threshold 90.0 %",
+    ]
 
 
 def test_thresholds_fit_the_default_limit_with_fifty_anomalies():
@@ -475,3 +482,37 @@ def test_other_issue_types_get_no_explanation():
     result = make_result("stale")
     issues = block(build_monitoring_context(result, 4000), "Data quality issues")
     assert "- data: stale_data (1)" in issues.splitlines()
+
+
+@pytest.mark.parametrize(
+    ("disk", "expected"),
+    [
+        (89.3, "- Disk 89.3 %, 0.7 pp below threshold 90.0 %"),
+        (89.96, "- Disk 90.0 %, <0.1 pp below threshold 90.0 %"),
+        (90.0, "- Disk 90.0 %, at threshold 90.0 % (not above it)"),
+        (90.04, "- Disk 90.0 %, <0.1 pp above threshold 90.0 %"),
+        (92.04, "- Disk 92.0 %, 2.0 pp above threshold 90.0 %"),
+    ],
+)
+def test_distance_to_threshold_is_stated_and_self_consistent(disk, expected):
+    result = make_result("fresh")
+    result["thresholds"] = dict(THRESHOLDS)
+    result["current"]["disk_usage"] = disk
+    assert expected in block(build_monitoring_context(result, 4000), "Anomaly thresholds").splitlines()
+
+
+def test_distance_is_skipped_for_unknown_values_and_stale_values_are_still_shown():
+    result = make_result("stale")
+    result["thresholds"] = {"cpu_usage": 90.0, "memory_usage": "bad", "disk_usage": 90.0}
+    result["current"]["cpu_usage"] = None
+    lines = block(build_monitoring_context(result, 4000), "Anomaly thresholds").splitlines()
+    assert lines[0].endswith("CPU 90.0 %, Disk 90.0 %.")
+    assert lines[1:] == [DISTANCE_HEADER, "- Disk 60.1 %, 29.9 pp below threshold 90.0 %"]
+
+
+def test_no_distance_header_without_current_values():
+    result = make_result("fresh")
+    result["thresholds"] = dict(THRESHOLDS)
+    result["current"] = None
+    thresholds = block(build_monitoring_context(result, 4000), "Anomaly thresholds")
+    assert thresholds == THRESHOLDS_LINE

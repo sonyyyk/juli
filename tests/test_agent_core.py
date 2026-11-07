@@ -261,3 +261,14 @@ def test_agent_context_includes_thresholds_from_monitoring_result():
     agent.handle_message("Чи варто хвилюватися через диск?")
 
     assert "Disk 90.0 %" in agent.last_messages[1]["content"]
+
+
+def test_system_prompt_forbids_trend_claims_and_treats_thresholds_as_not_safe():
+    from app.agent.core import DEFAULT_SYSTEM_PROMPT
+
+    prompt = " ".join(DEFAULT_SYSTEM_PROMPT.lower().split())
+    assert "trend analysis is not available" in prompt
+    for word in ("trends", "peaks", "stability", "forecast"):
+        assert word in prompt
+    assert "threshold is not a safe limit" in prompt
+    assert "say how close it is" in prompt
