@@ -1,4 +1,4 @@
-# JULI — Just Understanding Light Inside
+# JULI
 
 JULI is a local, AI-assisted Linux system administration and diagnostic agent.
 It follows **Observe → Understand → Act**: deterministic read-only tools observe

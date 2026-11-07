@@ -2,7 +2,7 @@
 
 ## Project concept
 
-JULI (Just Understanding Light Inside) is a local AI-assisted Linux system administration and diagnostic agent.
+JULI is a local AI-assisted Linux system administration and diagnostic agent.
 
 Core principles:
 
